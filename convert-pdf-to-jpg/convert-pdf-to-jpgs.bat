@@ -11,6 +11,13 @@ if errorlevel 1 (
 
 if "%~1"=="" (
     echo Glissez un fichier PDF sur ce script.
+    echo.
+    echo Options disponibles (en ligne de commande) :
+    echo   --output-dir  ^<dossier^>      Dossier de sortie des JPGs
+    echo   --output-name ^<template^>     Nom des fichiers, ex: {name}_{page:03d}
+    echo   --archive     cbr^|cbz        Creer une archive CBR ou CBZ apres extraction
+    echo   --keep-jpgs                   Conserver le dossier JPG apres archivage
+    echo   --workers     ^<nombre^>       Workers paralleles (1-32)
     pause
     exit /b 2
 )
