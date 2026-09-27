@@ -6,6 +6,40 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+const DEFAULT_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+  'Accept-Language': 'fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7',
+  'Referer': 'https://comicmafia.to/reader/comic-viewer.html',
+  'Sec-Fetch-Dest': 'image',
+  'Sec-Fetch-Mode': 'no-cors',
+  'Sec-Fetch-Site': 'same-origin'
+};
+
+async function safeFetch(url, options = {}, maxRetries = 5) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const res = await fetch(url, {
+        ...options,
+        headers: { ...DEFAULT_HEADERS, ...(options.headers || {}) }
+      });
+
+      if (res.status === 429) {
+        const waitTime = attempt * 10;
+        console.warn(`\n[!] Rate-limit détecté (HTTP 429). Pause de sécurité de ${waitTime}s avant reprise...`);
+        await new Promise(r => setTimeout(r, waitTime * 1000));
+        continue;
+      }
+
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res;
+    } catch (err) {
+      if (attempt === maxRetries) throw err;
+      await new Promise(r => setTimeout(r, 2000 * attempt));
+    }
+  }
+}
+
 export async function downloadWebComic(bookUri, outputDir = path.resolve(__dirname, 'files_downloads'), customTomeNum = null) {
   if (!fs.existsSync(outputDir)) {
     fs.mkdirSync(outputDir, { recursive: true });
@@ -25,7 +59,6 @@ export async function downloadWebComic(bookUri, outputDir = path.resolve(__dirna
     tomeNum = numMatch ? parseInt(numMatch[1], 10) : 1;
   }
 
-  // Target archive name: de_LTBUP_XX.cbr (e.g. de_LTBUP_48.cbr)
   const archiveFilename = `de_LTBUP_${tomeNum}.cbr`;
   const finalCbrPath = path.join(outputDir, archiveFilename);
 
@@ -35,10 +68,10 @@ export async function downloadWebComic(bookUri, outputDir = path.resolve(__dirna
   console.log(`  Images int.   : de_LTBUP_${tomeNum}_1.jpg, de_LTBUP_${tomeNum}_2.jpg...`);
   console.log(`========================================================`);
 
-  // Fetch page list from ComicMafia API
+  // Fetch page list from ComicMafia API with safe retry
   const apiUrl = `https://comicmafia.to/reader/comic_pages.php?bookUri=${encodeURIComponent(encodeURIComponent(rawUri))}`;
-  const res = await fetch(apiUrl, {
-    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
+  const res = await safeFetch(apiUrl, {
+    headers: { 'Accept': 'application/json, text/javascript, */*; q=0.01' }
   });
 
   const json = await res.json();
@@ -53,8 +86,8 @@ export async function downloadWebComic(bookUri, outputDir = path.resolve(__dirna
   const tempFolder = path.join(outputDir, `_temp_${tomeNum}_${Date.now()}`);
   fs.mkdirSync(tempFolder, { recursive: true });
 
-  // Download all pages concurrently in batches of 12
-  const CONCURRENCY = 12;
+  // Moderate concurrency (4 streams) with tiny pacing delay to respect server limits
+  const CONCURRENCY = 4;
   let downloadedCount = 0;
 
   async function downloadPage(idx) {
@@ -63,26 +96,24 @@ export async function downloadWebComic(bookUri, outputDir = path.resolve(__dirna
     const ext = path.extname(imgUrl) || '.jpg';
     const pageNum = parseInt(idx, 10) + 1;
     
-    // Internal image naming: de_LTBUP_48_1.jpg, de_LTBUP_48_2.jpg (unpadded)
+    // Internal image naming: de_LTBUP_XX_Y.jpg
     const entryName = `de_LTBUP_${tomeNum}_${pageNum}${ext}`;
     const localFile = path.join(tempFolder, entryName);
 
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      try {
-        const imgRes = await fetch(imgUrl, {
-          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)', 'Referer': 'https://comicmafia.to/' }
-        });
-        if (!imgRes.ok) throw new Error(`HTTP ${imgRes.status}`);
-        const buffer = Buffer.from(await imgRes.arrayBuffer());
-        fs.writeFileSync(localFile, buffer);
-        downloadedCount++;
-        process.stdout.write(`\r[*] Progression : ${downloadedCount}/${totalPages} pages (${Math.round((downloadedCount/totalPages)*100)}%)`);
-        return;
-      } catch (err) {
-        if (attempt === 3) throw err;
-        await new Promise(r => setTimeout(r, 1000 * attempt));
-      }
+    // Skip if already downloaded in case of partial resume
+    if (fs.existsSync(localFile) && fs.statSync(localFile).size > 1000) {
+      downloadedCount++;
+      return;
     }
+
+    const imgRes = await safeFetch(imgUrl);
+    const buffer = Buffer.from(await imgRes.arrayBuffer());
+    fs.writeFileSync(localFile, buffer);
+    downloadedCount++;
+    process.stdout.write(`\r[*] Progression : ${downloadedCount}/${totalPages} pages (${Math.round((downloadedCount/totalPages)*100)}%)`);
+    
+    // Micro delay between individual requests (50ms)
+    await new Promise(r => setTimeout(r, 50));
   }
 
   for (let i = 0; i < totalPages; i += CONCURRENCY) {
