@@ -1,110 +1,123 @@
-# Conversion PDF vers JPG
+# PDF to JPG
 
-`pdf-to-jpg.mjs` est un outil autonome pour extraire les pages JPEG intégrées dans un PDF,
-sans effectuer de rendu à une résolution arbitraire.
+`pdf-to-jpg.mjs` extracts the JPEG images embedded in a PDF without rendering it at an
+arbitrary resolution. Every page that is a single JPEG is copied out byte-for-byte and
+losslessly optimised.
 
-## Utilisation sous Windows
+## Usage on Windows
 
-Glisse-dépose un seul PDF sur `convert-pdf-to-jpgs.bat`.
+Drag and drop a single PDF onto `convert-pdf-to-jpgs.bat`.
 
-Node.js doit être installé et accessible dans le `PATH`. Les JPGs sont créés dans un dossier
-`<nom-du-PDF>_jpg`, à côté du PDF. Le dossier de sortie ne doit pas déjà exister.
+Node.js must be installed and available in `PATH`. JPGs are written to a folder named
+`<pdf-name>_jpg` next to the PDF. The output folder must not already exist.
 
-En ligne de commande :
+From the command line:
 
 ```powershell
-node .\pdf-to-jpg.mjs "C:\chemin\mon-numero.pdf"
-node .\pdf-to-jpg.mjs "C:\chemin\mon-numero.pdf" --output-dir "C:\chemin\images"
-node .\pdf-to-jpg.mjs "C:\chemin\mon-numero.pdf" --output-name "{name}_{page:03d}"
-node .\pdf-to-jpg.mjs "C:\chemin\mon-numero.pdf" --archive cbz
-node .\pdf-to-jpg.mjs "C:\chemin\mon-numero.pdf" --archive cbr --keep-jpgs
-node .\pdf-to-jpg.mjs "C:\chemin\mon-numero.pdf" --workers 4
+node .\pdf-to-jpg.mjs "C:\path\my-issue.pdf"
+node .\pdf-to-jpg.mjs "C:\path\my-issue.pdf" --output-dir "C:\path\images"
+node .\pdf-to-jpg.mjs "C:\path\my-issue.pdf" --output-name "{name}_{page:03d}"
+node .\pdf-to-jpg.mjs "C:\path\my-issue.pdf" --archive cbz
+node .\pdf-to-jpg.mjs "C:\path\my-issue.pdf" --archive cbr --keep-jpgs
+node .\pdf-to-jpg.mjs "C:\path\my-issue.pdf" --workers 4
 ```
 
 ## Options
 
 | Option | Description |
 |--------|-------------|
-| `--output-dir <dir>` | Dossier de sortie des JPGs (créé automatiquement) |
-| `--output-name <template>` | Template du nom de fichier (voir ci-dessous) |
-| `--archive cbr\|cbz` | Crée une archive après extraction (CBR ou CBZ) |
-| `--keep-jpgs` | Conserve le dossier de JPGs après création de l'archive |
-| `--workers <n>` | Nombre de workers parallèles (1–32, défaut : auto) |
+| `--output-dir <dir>` | Output folder for JPGs (created automatically) |
+| `--output-name <template>` | Filename template (see below) |
+| `--archive cbr\|cbz` | Pack extracted JPGs into a CBR or CBZ archive |
+| `--keep-jpgs` | Keep the JPG folder after archiving (default: deleted) |
+| `--workers <n>` | Number of parallel workers (1–32, default: auto) |
 
-### Nommage personnalisé (`--output-name`)
+### Filename template (`--output-name`)
 
-Le template contrôle le nom de chaque fichier JPG produit (`.jpg` est ajouté automatiquement) :
+The template controls the name of each output JPG (`.jpg` is appended automatically):
 
-| Placeholder | Description | Exemple |
+| Placeholder | Description | Example |
 |-------------|-------------|---------|
-| `{name}` | Nom du PDF sans extension | `JM2045` |
-| `{page}` | Numéro de page (1-based) | `7` |
-| `{page:03d}` | Numéro zéro-paddé sur N chiffres | `007` |
-| `{total}` | Nombre total de pages | `52` |
-| `{date}` | Date ISO `YYYY-MM-DD` | `2026-09-27` |
-| `{year}` | Année 4 chiffres | `2026` |
-| `{month}` | Mois 2 chiffres (01–12) | `09` |
-| `{day}` | Jour 2 chiffres (01–31) | `27` |
+| `{name}` | PDF filename without extension | `JM2045` |
+| `{page}` | 1-based page number | `7` |
+| `{page:03d}` | Page number zero-padded to N digits | `007` |
+| `{total}` | Total number of pages | `52` |
+| `{date}` | ISO date `YYYY-MM-DD` | `2026-09-27` |
+| `{year}` | 4-digit year | `2026` |
+| `{month}` | 2-digit month (01–12) | `09` |
+| `{day}` | 2-digit day (01–31) | `27` |
 
-Défaut : `{name}_{page:04d}` → `mon-numero_0001.jpg`, `mon-numero_0002.jpg`, …
+Default: `{name}_{page:04d}` → `my-issue_0001.jpg`, `my-issue_0002.jpg`, …
 
-### Archives (`--archive`)
+### Archive output (`--archive`)
 
-| Format | Extension | Prérequis | Optimisation |
-|--------|-----------|-----------|--------------|
-| `cbz` | `.cbz` | PowerShell (inclus dans Windows) | ZIP stockage (`-m0`) |
-| `cbr` | `.cbr` | [WinRAR](https://www.winrar.fr/) installé | RAR stockage (`-m0`) |
+| Format | Extension | Requirement | Compression |
+|--------|-----------|-------------|-------------|
+| `cbz` | `.cbz` | PowerShell (built into Windows) | ZIP store (`-m0`) |
+| `cbr` | `.cbr` | [WinRAR](https://www.rarlab.com/) installed | RAR store (`-m0`) |
 
-L'archive est créée **à côté du PDF** (ou dans le dossier parent de `--output-dir`).
-Le dossier de JPGs est **supprimé automatiquement** après archivage, sauf si `--keep-jpgs` est utilisé.
+The archive is placed **next to the PDF** (or in the parent of `--output-dir`).
+The JPG folder is **deleted after archiving** unless `--keep-jpgs` is set.
 
-> **Pourquoi « stockage » (-m0) ?**
-> Les JPEG sont déjà compressés. Les recompresser n'économise rien mais ralentirait l'opération.
-> Le CBZ/CBR résultant est donc aussi petit que possible sans toucher aux données JPEG.
+> **Why store mode (-m0)?**
+> JPEG data is already compressed. Re-compressing it saves nothing but wastes time.
+> The resulting CBZ/CBR is as compact as possible without touching the JPEG bytes.
 
-## Fonctionnement et limites
+## How it works / Limitations
 
-- Les pages simples contenant une image JPEG sont extraites dans l'ordre du PDF, sans décodage ni
-  réencodage.
-- Si le PDF décrit une zone visible plus petite que l'image intégrée, elle est recadrée sans perte
-  sur la grille JPEG, comme dans InducksScanUploader.
-- Les images extraites sont optimisées sans changer les coefficients JPEG ; les métadonnées privées
-  sont supprimées lorsque l'optimisation le permet.
-- Les PDF chiffrés, pages vectorielles, JPEG 2000 et pages contenant plusieurs images ne sont pas
-  rendus. Si une page ne peut pas être extraite, le programme échoue explicitement et ne garde
-  aucune sortie partielle.
-- Un dossier de sortie existant n'est jamais écrasé.
+- Only pages that consist of a single embedded JPEG are extracted, in page order,
+  without decoding or re-encoding.
+- If the PDF defines a visible crop box smaller than the embedded image, the image
+  is losslessly cropped to the JPEG block grid, matching InducksScanUploader behaviour.
+- Extracted images are optimised without altering JPEG coefficients; private metadata
+  is stripped when optimisation allows it.
+- Encrypted PDFs, vector pages, JPEG 2000 images, and pages containing multiple images
+  are not supported. If any page cannot be extracted the tool exits with an error and
+  keeps no partial output.
+- An existing output folder is never overwritten.
 
 ## Architecture
 
 ```
 convert-pdf-to-jpg/
-  package/                    ← package npm @starl/pdf-to-jpg-core
+  package/                    ← npm package @starl/pdf-to-jpg-core
     src/
-      index.mjs               ← API publique : createIsu, loadCore, formatOutputName
-      pdf-core.js             ← source de référence partagée (IIFE, compatible browser)
-      jpeg-core.js            ← source de référence partagée (IIFE, compatible browser)
+      index.mjs               ← Public API: createIsu, loadCore, formatOutputName
+      pdf-core.js             ← Shared reference source (IIFE, browser-compatible)
+      jpeg-core.js            ← Shared reference source (IIFE, browser-compatible)
     package.json
     README.md
-  pdf-to-jpg.mjs              ← CLI Node.js
-  jpeg-worker.mjs             ← worker de parallélisation JPEG
-  convert-pdf-to-jpgs.bat     ← lanceur Windows
-  sync-to-inducks.ps1         ← synchronise les sources vers InducksScanUploader
-  .npmrc                      ← config GitHub Packages
+  pdf-to-jpg.mjs              ← Node.js CLI
+  jpeg-worker.mjs             ← Parallel JPEG optimisation worker
+  convert-pdf-to-jpgs.bat     ← Windows drag-and-drop launcher
+  sync-to-inducks.ps1         ← Copies core libs to InducksScanUploader and runs its tests
+  .npmrc                      ← GitHub Packages registry config
 ```
 
-## Package partagé `@starl/pdf-to-jpg-core`
+## Shared package `@starl/pdf-to-jpg-core`
 
-`pdf-core.js` et `jpeg-core.js` dans `package/src/` sont les sources de référence communes au
-convertisseur et à l'extension InducksScanUploader.
+`pdf-core.js` and `jpeg-core.js` inside `package/src/` are the canonical sources shared
+between this CLI tool and the InducksScanUploader browser extension.
 
-### Synchroniser les fichiers vers InducksScanUploader
+### Syncing to InducksScanUploader
 
-Après avoir modifié `package/src/pdf-core.js` ou `package/src/jpeg-core.js`, exécute :
+After modifying `package/src/pdf-core.js` or `package/src/jpeg-core.js`, run:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\sync-to-inducks.ps1
 ```
 
-Le script copie les sources vers `pdf.js` et `jpegcrop.js` dans InducksScanUploader,
-vérifie leur syntaxe, et lance les tests de régression PDF.
+The script copies the sources to `pdf.js` and `jpegcrop.js` in InducksScanUploader,
+checks their syntax, and runs the PDF regression tests.
+
+### Publishing to GitHub Packages
+
+1. Create a GitHub token with `write:packages` and add it to `~/.npmrc`:
+   ```
+   //npm.pkg.github.com/:_authToken=ghp_...
+   ```
+2. Initialise a GitHub repository, then:
+   ```powershell
+   cd package
+   npm publish
+   ```
