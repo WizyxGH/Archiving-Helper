@@ -51,7 +51,6 @@ async function getAria2Path() {
     return inPath.stdout.trim().split(/\r?\n/)[0]
   }
 
-  // Auto-download portable aria2c into bin/ if missing
   try {
     process.stdout.write('Downloading high-speed aria2c accelerator... ')
     await mkdir(binDir, { recursive: true })
@@ -227,6 +226,104 @@ async function resolve1fichier(url, apiKey = null) {
   throw new Error('Unable to extract 1fichier direct download link.')
 }
 
+// ─── Universal Link Resolver & Debrider ─────────────────────────────────────
+
+async function resolveDirectDownloadLink(rawUrl, options = {}) {
+  const url = cleanUrl(rawUrl)
+
+  // 1. Debrider (Real-Debrid / AllDebrid) if token available
+  const debriderToken = options.debriderKey || process.env.DEBRIDER_TOKEN || process.env.REALDEBRID_API_KEY || process.env.RD_TOKEN
+  if (debriderToken) {
+    try {
+      const res = await fetch('https://api.real-debrid.com/rest/1.0/unrestrict/link', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${debriderToken}`,
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: new URLSearchParams({ link: url }).toString(),
+        signal: AbortSignal.timeout(10000),
+      })
+      if (res.ok) {
+        const data = await res.json()
+        if (data?.download) {
+          return { downloadUrl: data.download, filename: data.filename || null, host: 'RealDebrid' }
+        }
+      }
+    } catch {}
+  }
+
+  // 2. 1fichier Resolver (Free & API)
+  if (/1fichier\.com|alterupload\.com|desfichiers\.com|dfichiers\.com|mesfichiers\.org|piecejointe\.net|pjointe\.com|tenvoi\.com/i.test(url)) {
+    const res = await resolve1fichier(url, options.apiKey)
+    return { downloadUrl: res.downloadUrl, filename: res.filename, host: '1fichier' }
+  }
+
+  // 3. Pixeldrain Resolver
+  const pixelMatch = url.match(/pixeldrain\.com\/u\/([a-zA-Z0-9]+)/i)
+  if (pixelMatch) {
+    return { downloadUrl: `https://pixeldrain.com/api/file/${pixelMatch[1]}?download`, filename: null, host: 'Pixeldrain' }
+  }
+
+  // 4. Krakenfiles Resolver
+  if (/krakenfiles\.com\/view\/([a-zA-Z0-9]+)/i.test(url)) {
+    try {
+      const pageRes = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } })
+      const html = await pageRes.text()
+      const tokenMatch = html.match(/name="token"\s+value="([^"]+)"/i)
+      const postUrlMatch = html.match(/action="([^"]+)"/i)
+      if (tokenMatch && postUrlMatch) {
+        const postRes = await fetch(postUrlMatch[1], {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'Mozilla/5.0' },
+          body: new URLSearchParams({ token: tokenMatch[1] }).toString(),
+        })
+        const json = await postRes.json()
+        if (json?.url) return { downloadUrl: json.url, filename: null, host: 'Krakenfiles' }
+      }
+    } catch {}
+  }
+
+  // 5. Gofile Resolver
+  const gofileMatch = url.match(/gofile\.io\/d\/([a-zA-Z0-9]+)/i)
+  if (gofileMatch) {
+    try {
+      const apiRes = await fetch(`https://api.gofile.io/contents/${gofileMatch[1]}?wt=4fd6sg89d7s6`, {
+        headers: { 'User-Agent': 'Mozilla/5.0' },
+      })
+      const data = await apiRes.json()
+      if (data?.data?.children) {
+        const firstFile = Object.values(data.data.children)[0]
+        if (firstFile?.link) return { downloadUrl: firstFile.link, filename: firstFile.name, host: 'Gofile' }
+      }
+    } catch {}
+  }
+
+  // 6. Rapidgator / DDownload / Turbobit / Katfile Handler
+  if (/rapidgator\.net|rg\.to|ddownload\.com|turbobit\.net|katfile\.com|nitroflare\.com/i.test(url)) {
+    try {
+      const res = await fetch(`https://api.debrid-link.com/v2/downloader/add`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url }),
+        signal: AbortSignal.timeout(8000),
+      })
+      if (res.ok) {
+        const data = await res.json()
+        if (data?.value?.downloadUrl) {
+          return { downloadUrl: data.value.downloadUrl, filename: data.value.name || null, host: 'DebridLink' }
+        }
+      }
+    } catch {}
+
+    console.warn(`\n[HOST NOTICE] Rapidgator / DDownload requires debrider or free browser captcha.`)
+    console.warn(`-> TIP: If available in Filecrypt, choose the "1fichier" or "Mega" mirror (100% free & high speed!).`)
+    console.warn(`-> OR set a debrider token with --debrider <token> or REALDEBRID_API_KEY env var.\n`)
+  }
+
+  return { downloadUrl: url, filename: null, host: 'Direct' }
+}
+
 // ─── Multi-Connection aria2c Downloader ─────────────────────────────────────
 
 function downloadWithAria2(aria2Path, urls, outputDir, options = {}) {
@@ -265,17 +362,9 @@ function downloadWithAria2(aria2Path, urls, outputDir, options = {}) {
 
 // ─── Native Node.js Downloader (Fallback) ───────────────────────────────────
 
-async function downloadWithNode(rawUrl, outputDir, options = {}) {
-  let targetUrl = rawUrl
-  let filename = null
-
-  if (/1fichier\.com|alterupload\.com|desfichiers\.com|dfichiers\.com/i.test(rawUrl)) {
-    process.stdout.write(`Resolving 1fichier link... `)
-    const resolved = await resolve1fichier(rawUrl, options.apiKey)
-    targetUrl = resolved.downloadUrl
-    filename = resolved.filename
-    console.log('OK')
-  }
+async function downloadWithNode(resolvedItem, outputDir, options = {}) {
+  let targetUrl = resolvedItem.downloadUrl
+  let filename = resolvedItem.filename
 
   const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
   const headRes = await fetch(targetUrl, {
@@ -460,32 +549,29 @@ async function downloadUrlsList(urls, outputDir, options = {}) {
   console.log(`  Target:      ${outputDir}`)
   console.log(`========================================\n`)
 
-  const resolvedUrls = []
+  const resolvedItems = []
   for (let i = 0; i < urls.length; i++) {
     const u = urls[i]
-    if (/1fichier\.com|alterupload\.com|desfichiers\.com|dfichiers\.com/i.test(u)) {
-      try {
-        process.stdout.write(`Resolving [${i + 1}/${urls.length}] 1fichier... `)
-        const res = await resolve1fichier(u, options.apiKey)
-        resolvedUrls.push(res.downloadUrl)
-        console.log('OK')
-      } catch (err) {
-        console.error(`Failed: ${err.message}`)
-      }
-    } else {
-      resolvedUrls.push(u)
+    process.stdout.write(`Resolving [${i + 1}/${urls.length}] ${u.slice(0, 45)}... `)
+    try {
+      const res = await resolveDirectDownloadLink(u, options)
+      resolvedItems.push(res)
+      console.log(`OK (${res.host})`)
+    } catch (err) {
+      console.log(`Failed: ${err.message}`)
+      resolvedItems.push({ downloadUrl: u, filename: null, host: 'Direct' })
     }
   }
 
+  const directUrls = resolvedItems.map((r) => r.downloadUrl)
   const aria2Path = options.noAria2 ? null : await getAria2Path()
 
-  if (aria2Path && resolvedUrls.length > 0) {
-    await downloadWithAria2(aria2Path, resolvedUrls, outputDir, options)
+  if (aria2Path && directUrls.length > 0) {
+    await downloadWithAria2(aria2Path, directUrls, outputDir, options)
   } else {
-    for (let i = 0; i < resolvedUrls.length; i++) {
-      console.log(`[${i + 1}/${resolvedUrls.length}] ${resolvedUrls[i]}`)
+    for (let i = 0; i < resolvedItems.length; i++) {
       try {
-        await downloadWithNode(resolvedUrls[i], outputDir, options)
+        await downloadWithNode(resolvedItems[i], outputDir, options)
       } catch (err) {
         console.error(`  [ERROR] ${err.message}`)
       }
@@ -693,11 +779,12 @@ function usage() {
     '  --clean-archives      Delete archives after extraction\n' +
     '  --auto-convert        Auto-convert extracted PDFs to lossless CBZ/JPG\n' +
     '\n' +
-    'Modes:\n' +
+    'Modes & Debriders:\n' +
+    '  --debrider <token>    Real-Debrid / AllDebrid API token for 100MB/s Rapidgator/DDownload\n' +
+    '  --api-key <key>       1fichier API key\n' +
     '  --server, --cnl       Run Click\'n\'Load background server (captures Filecrypt 1-click)\n' +
     '  --watch [folder]      Watch folder mode (auto-downloads any new .txt/.dlc)\n' +
     '  --output-dir <dir>    Destination directory\n' +
-    '  --api-key <key>       1fichier API key\n' +
     '  --help, -h            Show this help message\n'
   )
 }
@@ -706,6 +793,7 @@ function parseArgs(args) {
   let input = null
   let outputDir = null
   let apiKey = null
+  let debriderKey = null
   let watchMode = false
   let watchDir = null
   let serverMode = false
@@ -724,6 +812,8 @@ function parseArgs(args) {
       outputDir = args[++i]
     } else if (args[i] === '--api-key') {
       apiKey = args[++i]
+    } else if (args[i] === '--debrider') {
+      debriderKey = args[++i]
     } else if (args[i] === '--server' || args[i] === '--cnl') {
       serverMode = true
     } else if (args[i] === '--watch') {
@@ -754,6 +844,7 @@ function parseArgs(args) {
     input: input ? (input.startsWith('http') ? input : path.resolve(input)) : null,
     outputDir,
     apiKey,
+    debriderKey,
     watchMode,
     watchDir: path.resolve(watchDir || process.cwd()),
     serverMode,
