@@ -16,6 +16,37 @@ const DEFAULT_HEADERS = {
   'Sec-Fetch-Site': 'same-origin'
 };
 
+// 100% Lossless JPEG metadata cleaner (strips useless APP/EXIF/comment markers without touching any pixels/DCT coefficients)
+function optimizeJpegLossless(buf) {
+  if (buf[0] !== 0xFF || buf[1] !== 0xD8) return buf; // not a JPEG
+  const chunks = [Buffer.from([0xFF, 0xD8])];
+  let offset = 2;
+  while (offset < buf.length - 1) {
+    if (buf[offset] !== 0xFF) {
+      chunks.push(buf.subarray(offset));
+      break;
+    }
+    const marker = buf[offset + 1];
+    if (marker === 0xDA) { // Start of Spectral Scan
+      chunks.push(buf.subarray(offset));
+      break;
+    }
+    if (marker === 0xD9 || (marker >= 0xD0 && marker <= 0xD7)) {
+      chunks.push(buf.subarray(offset, offset + 2));
+      offset += 2;
+      continue;
+    }
+    const len = buf.readUInt16BE(offset + 2);
+    // Strip APP1..APP15 metadata & Comments (0xFE)
+    const isAppOrComment = (marker >= 0xE1 && marker <= 0xEF) || marker === 0xFE;
+    if (!isAppOrComment) {
+      chunks.push(buf.subarray(offset, offset + 2 + len));
+    }
+    offset += 2 + len;
+  }
+  return Buffer.concat(chunks);
+}
+
 async function safeFetch(url, options = {}, maxRetries = 5) {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
@@ -65,7 +96,8 @@ export async function downloadWebComic(bookUri, outputDir = path.resolve(__dirna
   console.log(`\n========================================================`);
   console.log(`  Archive Cible : ${archiveFilename}`);
   console.log(`  Source URI    : ${rawUri}`);
-  console.log(`  Images int.   : de_LTBUP_${tomeNum}_1.jpg, de_LTBUP_${tomeNum}_2.jpg...`);
+  console.log(`  Mode          : Lossless (100% sans perte de qualité)`);
+  console.log(`  Nomenclature  : de_LTBUP_${tomeNum}_1.jpg, de_LTBUP_${tomeNum}_2.jpg...`);
   console.log(`========================================================`);
 
   // Fetch page list from ComicMafia API with safe retry
@@ -86,7 +118,7 @@ export async function downloadWebComic(bookUri, outputDir = path.resolve(__dirna
   const tempFolder = path.join(outputDir, `_temp_${tomeNum}_${Date.now()}`);
   fs.mkdirSync(tempFolder, { recursive: true });
 
-  // Moderate concurrency (4 streams) with tiny pacing delay to respect server limits
+  // Concurrency (4 streams) with lossless cleaning
   const CONCURRENCY = 4;
   let downloadedCount = 0;
 
@@ -100,19 +132,22 @@ export async function downloadWebComic(bookUri, outputDir = path.resolve(__dirna
     const entryName = `de_LTBUP_${tomeNum}_${pageNum}${ext}`;
     const localFile = path.join(tempFolder, entryName);
 
-    // Skip if already downloaded in case of partial resume
     if (fs.existsSync(localFile) && fs.statSync(localFile).size > 1000) {
       downloadedCount++;
       return;
     }
 
     const imgRes = await safeFetch(imgUrl);
-    const buffer = Buffer.from(await imgRes.arrayBuffer());
-    fs.writeFileSync(localFile, buffer);
+    const rawBuffer = Buffer.from(await imgRes.arrayBuffer());
+    
+    // Lossless cleaning: strips useless EXIF/APP markers without touching pixel data
+    const optimizedBuffer = optimizeJpegLossless(rawBuffer);
+    
+    fs.writeFileSync(localFile, optimizedBuffer);
     downloadedCount++;
     process.stdout.write(`\r[*] Progression : ${downloadedCount}/${totalPages} pages (${Math.round((downloadedCount/totalPages)*100)}%)`);
     
-    // Micro delay between individual requests (50ms)
+    // Micro delay between requests
     await new Promise(r => setTimeout(r, 50));
   }
 
@@ -124,7 +159,7 @@ export async function downloadWebComic(bookUri, outputDir = path.resolve(__dirna
     await Promise.all(batch);
   }
 
-  console.log(`\n[*] Empaquetage dans l'archive : ${archiveFilename}...`);
+  console.log(`\n[*] Empaquetage dans l'archive CBR : ${archiveFilename}...`);
 
   const zip = new AdmZip();
   // Sort files numerically by page number (1, 2, 3... 10... 100) before adding to ZIP
