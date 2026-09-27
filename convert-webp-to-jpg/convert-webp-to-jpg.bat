@@ -59,7 +59,7 @@ for %%f in (*.webp) do (
 if %count% equ 0 (
     echo [INFO] No .webp files found in this directory.
 ) else (
-    echo [SUCCESS] %count% file(s) processed.
+    echo [SUCCESS] %count% file[s] processed.
 )
 popd
 exit /b

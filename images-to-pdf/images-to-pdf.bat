@@ -14,7 +14,7 @@ set "TARGET_DIR="
 set "OUTPUT_PDF="
 
 if "%~1"=="" (
-    echo Enter the path of the folder containing images (or press Enter for current directory):
+    echo Enter the path of the folder containing images [or press Enter for current directory]:
     set /p "TARGET_DIR="
     if not defined TARGET_DIR set "TARGET_DIR=%CD%"
 ) else (
