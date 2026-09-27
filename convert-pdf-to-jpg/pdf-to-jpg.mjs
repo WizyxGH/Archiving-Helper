@@ -58,11 +58,16 @@ loadCore(
 
 // ─── Archive helpers ─────────────────────────────────────────────────────────
 
-/** Returns the path to Rar.exe / 'rar' if available, or null otherwise. */
+/**
+ * Returns the path to Rar.exe or 'rar' if available in PATH.
+ * Returns null if WinRAR is not found.
+ */
 function findRar() {
+  // Check PATH first
   const inPath = spawnSync('where', ['rar'], { encoding: 'utf8', shell: true })
   if (inPath.status === 0 && inPath.stdout.trim()) return 'rar'
 
+  // Common WinRAR install locations
   const candidates = [
     'C:\\Program Files\\WinRAR\\Rar.exe',
     'C:\\Program Files (x86)\\WinRAR\\Rar.exe',
@@ -74,37 +79,49 @@ function findRar() {
 }
 
 /**
- * Creates a CBZ archive (ZIP) from all files in a folder.
+ * Creates a CBZ archive (ZIP) from a folder of JPGs.
  * Uses PowerShell's Compress-Archive — no extra tools needed on Windows.
+ *
+ * @param {string} jpgDir    - Source folder containing JPGs
+ * @param {string} archivePath - Target .cbz path
  */
 async function createCbz(jpgDir, archivePath) {
+  // Compress-Archive requires the destination to not already exist.
+  // We write to a temp .zip then rename to .cbz.
   const tempZip = archivePath + '.tmp.zip'
   try { await rm(tempZip, { force: true }) } catch { /* ignore */ }
 
+  // -Path "dir\*" includes the files without nesting the folder itself in the archive.
   const ps = spawnSync('powershell', [
     '-NoProfile', '-NonInteractive', '-Command',
     `Compress-Archive -LiteralPath (Get-ChildItem -LiteralPath '${jpgDir}' | Select-Object -ExpandProperty FullName) -DestinationPath '${tempZip}'`,
   ], { encoding: 'utf8' })
 
   if (ps.status !== 0) {
-    throw new Error(`Compress-Archive failed: ${(ps.stderr || ps.stdout || '').trim()}`)
+    throw new Error(`Compress-Archive a échoué : ${(ps.stderr || ps.stdout || '').trim()}`)
   }
   await rename(tempZip, archivePath)
 }
 
 /**
- * Creates a CBR archive (RAR) from all files in a folder.
- * Requires WinRAR or the rar CLI.
- * Uses store mode (-m0): JPEG data is already compressed, re-compressing gains nothing.
+ * Creates a CBR archive (RAR) from a folder of JPGs.
+ * Requires WinRAR or rar CLI.
+ *
+ * @param {string} jpgDir    - Source folder containing JPGs
+ * @param {string} archivePath - Target .cbr path
+ * @param {string} rarExe    - Path to Rar.exe or 'rar'
  */
 async function createCbr(jpgDir, archivePath, rarExe) {
+  // -m0 : store only (no compression — JPEG data doesn't compress further)
+  // -ep : exclude base dir path (store only filenames, no folder prefix)
+  // -r  : recurse (in case of nested structure, though we don't create any)
   const result = spawnSync(
     rarExe,
     ['a', '-m0', '-ep', '-idq', archivePath, path.join(jpgDir, '*.jpg')],
     { encoding: 'utf8', shell: true },
   )
   if (result.status !== 0) {
-    throw new Error(`WinRAR failed (exit ${result.status}): ${(result.stderr || result.stdout || '').trim()}`)
+    throw new Error(`WinRAR a échoué (code ${result.status}) : ${(result.stderr || result.stdout || '').trim()}`)
   }
 }
 
@@ -115,18 +132,18 @@ function usage() {
     'Usage: node pdf-to-jpg.mjs <file.pdf> [options]\n' +
     '\n' +
     'Options:\n' +
-    '  --output-dir <dir>       Output folder for JPGs (created automatically)\n' +
-    '  --output-name <template> Filename template (without extension)\n' +
-    `                           Default: "${DEFAULT_OUTPUT_NAME_TEMPLATE}"\n` +
-    '                           Variables: {name}, {page}, {page:03d}, {total},\n' +
-    '                                      {date}, {year}, {month}, {day}\n' +
-    '  --archive <cbr|cbz>      Pack extracted JPGs into a CBR (RAR) or CBZ (ZIP) archive\n' +
-    '                           CBR requires WinRAR; CBZ uses PowerShell (no extra install)\n' +
-    '  --keep-jpgs              Keep the JPG folder after archiving\n' +
-    '                           (default: folder is deleted when --archive is used)\n' +
-    '  --workers <count>        Number of parallel workers (1–32, default: auto)\n' +
+    '  --output-dir <dir>       Dossier de sortie pour les JPGs (créé automatiquement)\n' +
+    '  --output-name <template> Template du nom de fichier (sans extension)\n' +
+    `                           Défaut : "${DEFAULT_OUTPUT_NAME_TEMPLATE}"\n` +
+    '                           Variables : {name}, {page}, {page:03d}, {total},\n' +
+    '                                       {date}, {year}, {month}, {day}\n' +
+    '  --archive <cbr|cbz>      Crée une archive CBR (RAR) ou CBZ (ZIP) après extraction\n' +
+    '                           CBR requiert WinRAR ; CBZ utilise PowerShell\n' +
+    '  --keep-jpgs              Conserve le dossier de JPGs après création de l\'archive\n' +
+    '                           (par défaut le dossier est supprimé si --archive est utilisé)\n' +
+    '  --workers <count>        Nombre de workers parallèles (1–32, défaut : auto)\n' +
     '\n' +
-    'Extracts and losslessly optimises single-JPEG pages without rendering the PDF.',
+    'Extrait et optimise sans perte les pages JPEG d\'un PDF sans le rendre.',
   )
 }
 
@@ -193,7 +210,7 @@ function visibleCrop(bytes, visible) {
   const y = snap(visible.y, grid.h, visible.imageH)
   const w = Math.min(visible.imageW, Math.round(visible.x + visible.w)) - x
   const h = Math.min(visible.imageH, Math.round(visible.y + visible.h)) - y
-  if (w <= 0 || h <= 0) throw new Error('The visible crop area of the PDF is invalid.')
+  if (w <= 0 || h <= 0) throw new Error('La zone visible du PDF est invalide.')
   return isu.jpegCrop.crop(bytes, { x, y, w, h }).bytes
 }
 
@@ -213,7 +230,7 @@ function optimizeInWorker(worker, bytes, visible) {
       else resolve(new Uint8Array(message.bytes))
     }
     const onError = (error) => { cleanup(); reject(error) }
-    const onExit = (code) => { cleanup(); reject(new Error(`JPEG worker exited unexpectedly (code ${code}).`)) }
+    const onExit = (code) => { cleanup(); reject(new Error(`Le worker JPEG s'est arrêté (code ${code}).`)) }
     worker.once('message', onMessage)
     worker.once('error', onError)
     worker.once('exit', onExit)
@@ -227,28 +244,29 @@ async function convert(input, requestedOutputDir, outputNameTemplate, archive, k
   const pdfName = path.parse(input).name
   const pdfParent = path.dirname(input)
 
+  // JPG output dir — always next to the PDF or in requestedOutputDir
   const outputDir = requestedOutputDir ||
     path.join(pdfParent, `${pdfName}_jpg`)
 
   try {
     await stat(outputDir)
-    throw new Error(`Output folder already exists: ${outputDir}`)
+    throw new Error(`Le dossier de sortie existe déjà : ${outputDir}`)
   } catch (error) {
     if (error.code !== 'ENOENT') throw error
   }
 
-  // Archive is placed next to the PDF, or in the parent of --output-dir
+  // Archive path — same directory as the PDF (or requestedOutputDir's parent)
   const archiveParent = requestedOutputDir ? path.dirname(requestedOutputDir) : pdfParent
   const archivePath = archive ? path.join(archiveParent, `${pdfName}.${archive}`) : null
 
-  // Pre-flight: verify WinRAR is available before starting conversion
+  // Pre-flight: check WinRAR availability for CBR before starting the conversion
   let rarExe = null
   if (archive === 'cbr') {
     rarExe = findRar()
     if (!rarExe) {
       throw new Error(
-        'WinRAR (Rar.exe) not found. Install WinRAR or add it to PATH.\n' +
-        '  Checked: PATH, C:\\Program Files\\WinRAR\\, C:\\Program Files (x86)\\WinRAR\\',
+        'WinRAR (Rar.exe) introuvable. Installez WinRAR ou ajoutez-le au PATH.\n' +
+        '  Chemins vérifiés : PATH, C:\\Program Files\\WinRAR\\, C:\\Program Files (x86)\\WinRAR\\',
       )
     }
   }
@@ -266,7 +284,7 @@ async function convert(input, requestedOutputDir, outputNameTemplate, archive, k
           let read = 0
           while (read < length) {
             const result = await handle.read(bytes, read, length - read, start + read)
-            if (!result.bytesRead) throw new Error('Incomplete read of PDF file.')
+            if (!result.bytesRead) throw new Error('Lecture incomplète du PDF.')
             read += result.bytesRead
           }
           return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
@@ -287,9 +305,9 @@ async function convert(input, requestedOutputDir, outputNameTemplate, archive, k
     result = await isu.pdfImages(file)
     if (result.skipped.length) {
       throw new Error(
-        `${result.skipped.length} page(s) are not a single JPEG image ` +
+        `${result.skipped.length} page(s) ne sont pas une image JPEG unique ` +
         `(${result.skipped.slice(0, 8).join(', ')}${result.skipped.length > 8 ? ', \u2026' : ''}). ` +
-        'No partial output was kept.',
+        `Aucune sortie partielle n\u2019a \u00e9t\u00e9 conserv\u00e9e.`,
       )
     }
     await mkdir(parent, { recursive: true })
@@ -328,7 +346,7 @@ async function convert(input, requestedOutputDir, outputNameTemplate, archive, k
         totalOutputBytes += outputBytes.length
         console.log(
           `[${index + 1}/${result.files.length}] ${outputFilename}` +
-          (visible ? ' (cropped to PDF visible area)' : '') +
+          (visible ? ' (recadr\u00e9e selon la zone visible du PDF)' : '') +
           ` \u2014 ${formatBytes(sourceBytes.length)} \u2192 ${formatBytes(outputBytes.length)}`,
         )
       }
@@ -346,19 +364,19 @@ async function convert(input, requestedOutputDir, outputNameTemplate, archive, k
   }
 
   const saved = totalInputBytes - totalOutputBytes
-  console.log(`\n${result.files.length} page(s) written to: ${outputDir}`)
+  console.log(`\n${result.files.length} page(s) enregistr\u00e9e(s) dans : ${outputDir}`)
   console.log(
-    `Extracted: ${formatBytes(totalInputBytes)} \u00b7 output: ${formatBytes(totalOutputBytes)}` +
-    (saved > 0 ? ` \u00b7 saved: ${formatBytes(saved)}` : ''),
+    `JPEG extraits : ${formatBytes(totalInputBytes)} \u00b7 sortie : ${formatBytes(totalOutputBytes)}` +
+    (saved > 0 ? ` \u00b7 \u00e9conomis\u00e9s : ${formatBytes(saved)}` : ''),
   )
-  if (workers.length > 1) console.log(`JPEG optimisation used ${workers.length} workers.`)
+  if (workers.length > 1) console.log(`Optimisation JPEG avec ${workers.length} workers.`)
 
   // ── Archive creation ──────────────────────────────────────────────────────
   if (archive) {
-    console.log(`\nPacking ${archive.toUpperCase()} archive: ${archivePath}`)
+    console.log(`\nCr\u00e9ation de l\u2019archive ${archive.toUpperCase()} : ${archivePath}`)
     try {
       await stat(archivePath)
-      throw new Error(`Archive already exists: ${archivePath}`)
+      throw new Error(`L\u2019archive existe d\u00e9j\u00e0 : ${archivePath}`)
     } catch (e) {
       if (e.code !== 'ENOENT') throw e
     }
@@ -370,19 +388,19 @@ async function convert(input, requestedOutputDir, outputNameTemplate, archive, k
     }
 
     const archiveStat = await stat(archivePath)
-    console.log(`Archive created: ${formatBytes(archiveStat.size)}`)
+    console.log(`Archive cr\u00e9\u00e9e : ${formatBytes(archiveStat.size)}`)
 
     if (!keepJpgs) {
       await rm(outputDir, { recursive: true, force: true })
-      console.log('JPG folder removed (use --keep-jpgs to retain it).')
+      console.log(`Dossier JPG supprim\u00e9 (utilisez --keep-jpgs pour le conserver).`)
     }
   }
 }
 
 function formatBytes(bytes) {
   return bytes >= 1024 * 1024
-    ? `${(bytes / (1024 * 1024)).toFixed(1)} MB`
-    : `${(bytes / 1024).toFixed(1)} KB`
+    ? `${(bytes / (1024 * 1024)).toFixed(1)} Mo`
+    : `${(bytes / 1024).toFixed(1)} Ko`
 }
 
 // ─── Entry point ─────────────────────────────────────────────────────────────
@@ -391,6 +409,6 @@ try {
   const args = parseArgs(process.argv.slice(2))
   if (args) await convert(args.input, args.outputDir, args.outputName, args.archive, args.keepJpgs, args.workers)
 } catch (error) {
-  console.error(`Error: ${error.message}`)
+  console.error(`Erreur : ${error.message}`)
   process.exitCode = 1
 }

@@ -2,14 +2,7 @@
  * @module pdf-to-jpg-core
  *
  * Browser-safe core for lossless PDF-to-JPEG extraction.
- * Works in any JS environment that provides the `isu` adapter object.
- *
- * Usage (Node.js):
- *   import { createIsu, loadCore, formatOutputName } from '@starl/pdf-to-jpg-core'
- *
- * Usage (browser extension):
- *   Load pdf-core.js and jpeg-core.js as plain content scripts;
- *   they install themselves on window.ISU. No import needed.
+ * Works in any JS environment (Browser, Node.js, WebExtensions) that provides the `isu` adapter object.
  */
 
 // ─── ISU adapter factory ────────────────────────────────────────────────────
@@ -78,7 +71,7 @@ export function loadCore(isu, readFile, runInContext) {
  * Supported placeholders:
  *   {name}          — PDF base name without extension
  *   {page}          — 1-based page number (no padding)
- *   {page:03d}      — page zero-padded to 3 digits  (any width: 02d, 04d, …)
+ *   {page:03d}      — page zero-padded to 3 digits (any width: 02d, 04d, …)
  *   {total}         — total number of pages
  *   {date}          — ISO date YYYY-MM-DD (local time)
  *   {year}          — 4-digit year
@@ -109,14 +102,14 @@ export function formatOutputName(template, vars) {
     (match, key, width) => {
       const w = width ? parseInt(width, 10) : 0
       switch (key) {
-        case 'name':  return name
-        case 'page':  return w ? pad(page, w) : String(page)
+        case 'name': return name
+        case 'page': return w ? pad(page, w) : String(page)
         case 'total': return w ? pad(total, w) : String(total)
-        case 'date':  return `${yyyy}-${mm}-${dd}`
-        case 'year':  return String(yyyy)
+        case 'date': return `${yyyy}-${mm}-${dd}`
+        case 'year': return String(yyyy)
         case 'month': return mm
-        case 'day':   return dd
-        default:      return match // leave unknown placeholders as-is
+        case 'day': return dd
+        default: return match
       }
     },
   )
