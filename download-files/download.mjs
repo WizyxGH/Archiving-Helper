@@ -1,14 +1,12 @@
 #!/usr/bin/env node
 import { open, mkdir, stat, readFile, readdir, rm, rename } from 'node:fs/promises'
-import { createWriteStream, existsSync, statSync } from 'node:fs'
+import { createWriteStream, existsSync, statSync, createReadStream } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawn, spawnSync } from 'node:child_process'
 import { pipeline } from 'node:stream/promises'
 import { Readable } from 'node:stream'
-import http from 'node:http'
-import crypto from 'node:crypto'
-import readline from 'node:readline'
+import { createUnzip } from 'node:zlib'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const binDir = path.join(scriptDir, 'bin')
@@ -20,7 +18,6 @@ function formatBytes(bytes) {
   if (bytes == null || isNaN(bytes) || bytes < 0) return '0 B'
   if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`
   if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
-  if (bytes >= 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
   if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`
   return `${bytes} B`
 }
@@ -36,7 +33,7 @@ function cleanUrl(url) {
   return url.trim().replace(/^["']|["']$/g, '')
 }
 
-// ─── Aria2c Locator & Auto-Bootstrapper ──────────────────────────────────────
+// ─── Aria2c Locator & Bootstrapper ──────────────────────────────────────────
 
 async function getAria2Path() {
   if (existsSync(localAria2)) return localAria2
@@ -48,7 +45,7 @@ async function getAria2Path() {
 
   // Auto-download portable aria2c into bin/ if missing
   try {
-    process.stdout.write('Downloading high-speed aria2c accelerator... ')
+    console.log('Downloading high-speed downloader (aria2c)...')
     await mkdir(binDir, { recursive: true })
     const zipUrl = 'https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip'
     const tempZip = path.join(binDir, 'aria2.zip')
@@ -58,63 +55,37 @@ async function getAria2Path() {
       const fileStream = createWriteStream(tempZip)
       await pipeline(res.body, fileStream)
 
+      // Unzip using PowerShell
       spawnSync('powershell', [
         '-NoProfile', '-Command',
         `Expand-Archive -LiteralPath '${tempZip}' -DestinationPath '${binDir}' -Force`
       ])
       await rm(tempZip, { force: true })
 
+      // Locate extracted aria2c.exe
       const files = await readdir(binDir, { recursive: true })
       for (const f of files) {
         if (path.basename(f).toLowerCase() === 'aria2c.exe') {
           const found = path.join(binDir, f)
-          if (found !== localAria2) await rename(found, localAria2)
-          console.log('OK (installed)')
+          if (found !== localAria2) {
+            await rename(found, localAria2)
+          }
+          console.log('aria2c installed successfully.\n')
           return localAria2
         }
       }
     }
   } catch (err) {
-    console.log(`(failed: ${err.message}, using native downloader)`)
+    console.warn(`Could not auto-install aria2c (${err.message}). Using native Node downloader.`)
   }
 
   return null
 }
 
-// ─── Click'n'Load (CNL2) Decryptor ──────────────────────────────────────────
-
-function decryptCnl2(cryptedBase64, jkCode) {
-  let keyHex = ''
-  try {
-    // Extract key from function f() { return '...'; }
-    const match = jkCode.match(/return\s*['"]([0-9a-fA-F]+)['"]/i)
-    if (match) {
-      keyHex = match[1]
-    } else {
-      const fn = new Function(jkCode + '; return f();')
-      keyHex = fn()
-    }
-  } catch (err) {
-    throw new Error(`Failed to extract Click'n'Load key: ${err.message}`)
-  }
-
-  const keyBuffer = Buffer.from(keyHex, 'hex')
-  const cipherBuffer = Buffer.from(cryptedBase64, 'base64')
-
-  const decipher = crypto.createDecipheriv('aes-128-cbc', keyBuffer, keyBuffer)
-  decipher.setAutoPadding(false)
-
-  let decrypted = Buffer.concat([decipher.update(cipherBuffer), decipher.final()]).toString('utf8')
-  // Strip null bytes and split
-  decrypted = decrypted.replace(/\0/g, '')
-
-  return decrypted.split(/\r?\n/).map(cleanUrl).filter((u) => /^https?:\/\//i.test(u))
-}
-
 // ─── DLC Decryptor ───────────────────────────────────────────────────────────
 
 async function decryptDlc(dlcContent) {
-  process.stdout.write('Decrypting DLC container... ')
+  console.log('Decrypting DLC container...')
   
   // Method 1: dcrypt.it API
   try {
@@ -134,11 +105,12 @@ async function decryptDlc(dlcContent) {
     if (res.ok) {
       const data = await res.json()
       if (data?.success?.links && Array.isArray(data.success.links) && data.success.links.length > 0) {
-        console.log(`OK (${data.success.links.length} links found)`)
         return data.success.links
       }
     }
-  } catch {}
+  } catch {
+    // fallback
+  }
 
   // Method 2: Debrid-link fallback
   try {
@@ -151,13 +123,14 @@ async function decryptDlc(dlcContent) {
     if (res.ok) {
       const data = await res.json()
       if (data?.value && Array.isArray(data.value) && data.value.length > 0) {
-        console.log(`OK (${data.value.length} links found)`)
         return data.value
       }
     }
-  } catch {}
+  } catch {
+    // fallback
+  }
 
-  throw new Error('Failed to decrypt DLC container. Please check your internet connection.')
+  throw new Error('Failed to decrypt DLC container. Check internet connection.')
 }
 
 // ─── 1fichier Link Resolver ─────────────────────────────────────────────────
@@ -178,7 +151,9 @@ async function resolve1fichier(url, apiKey = null) {
       if (data.status === 'OK' && data.url) {
         return { downloadUrl: data.url, filename: data.filename || null }
       }
-    } catch {}
+    } catch (e) {
+      console.warn(`1fichier API warning: ${e.message}, falling back to web resolver...`)
+    }
   }
 
   const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
@@ -224,7 +199,7 @@ async function resolve1fichier(url, apiKey = null) {
   throw new Error('Unable to extract 1fichier direct download link.')
 }
 
-// ─── Multi-Connection aria2c Downloader ─────────────────────────────────────
+// ─── High-Speed Aria2c Downloader ───────────────────────────────────────────
 
 function downloadWithAria2(aria2Path, urls, outputDir, options = {}) {
   return new Promise((resolve, reject) => {
@@ -247,7 +222,7 @@ function downloadWithAria2(aria2Path, urls, outputDir, options = {}) {
         `--console-log-level=notice`,
       ]
 
-      console.log(`\nLaunching aria2c with ${maxConnections} parallel connections per file...\n`)
+      console.log(`Starting multi-connection download with aria2c (${maxConnections} conns/file)...`)
       const child = spawn(aria2Path, args, { stdio: 'inherit' })
 
       child.on('close', async (code) => {
@@ -395,7 +370,7 @@ async function flattenDirectory(targetDir) {
 
 async function runPostProcessing(outputDir, options = {}) {
   console.log(`\n========================================`)
-  console.log(`  Post-Processing Pipeline`)
+  console.log(`  Running Post-Processing Pipeline`)
   console.log(`========================================\n`)
 
   const files = await readdir(outputDir)
@@ -403,6 +378,7 @@ async function runPostProcessing(outputDir, options = {}) {
   const pdfs = files.filter((f) => /\.pdf$/i.test(f))
   const winRar = findWinRar()
 
+  // 1. Auto-extract archives
   if (options.autoExtract && archives.length > 0) {
     console.log(`Found ${archives.length} archive(s) to extract...`)
     for (const archive of archives) {
@@ -416,6 +392,7 @@ async function runPostProcessing(outputDir, options = {}) {
       if (winRar) {
         spawnSync(winRar, ['x', '-idq', '-y', archivePath, targetFolder + '\\'], { shell: true })
       } else {
+        // Fallback PowerShell for ZIP/CBZ
         spawnSync('powershell', [
           '-NoProfile', '-Command',
           `Expand-Archive -LiteralPath '${archivePath}' -DestinationPath '${targetFolder}' -Force`
@@ -426,15 +403,16 @@ async function runPostProcessing(outputDir, options = {}) {
 
       if (options.cleanArchives) {
         await rm(archivePath, { force: true })
-        console.log(`  Deleted archive: ${archive}`)
+        console.log(`  Deleted original archive: ${archive}`)
       }
     }
   }
 
+  // 2. Auto-convert PDFs
   if (options.autoConvert && pdfs.length > 0) {
     const pdfConverterScript = path.join(scriptDir, '..', 'convert-pdf-to-jpg', 'pdf-to-jpg.mjs')
     if (existsSync(pdfConverterScript)) {
-      console.log(`Found ${pdfs.length} PDF(s) to convert...`)
+      console.log(`Found ${pdfs.length} PDF(s) to convert to lossless JPG/CBZ...`)
       for (const pdf of pdfs) {
         const pdfPath = path.join(outputDir, pdf)
         console.log(`Converting PDF: ${pdf}`)
@@ -446,17 +424,44 @@ async function runPostProcessing(outputDir, options = {}) {
   console.log('\nPost-processing complete!')
 }
 
-// ─── Batch Downloader Engine ─────────────────────────────────────────────────
+// ─── Main Batch Controller ───────────────────────────────────────────────────
 
-async function downloadUrlsList(urls, outputDir, options = {}) {
+async function processInputFile(filePath, options = {}) {
+  const fileStat = await stat(filePath)
+  if (!fileStat.isFile()) throw new Error(`Input is not a file: ${filePath}`)
+
+  const fileExt = path.extname(filePath).toLowerCase()
+  const baseName = path.parse(filePath).name
+  const parentDir = path.dirname(filePath)
+
+  const outputDir = options.outputDir
+    ? path.resolve(options.outputDir)
+    : path.join(parentDir, `${baseName}_downloads`)
+
   await mkdir(outputDir, { recursive: true })
+
+  const rawContent = await readFile(filePath, 'utf8')
+  let urls = []
+
+  if (fileExt === '.dlc') {
+    urls = await decryptDlc(rawContent)
+  } else {
+    urls = rawContent
+      .split(/\r?\n/)
+      .map(cleanUrl)
+      .filter((line) => /^https?:\/\//i.test(line))
+  }
+
+  if (urls.length === 0) throw new Error('No valid download URLs found in file.')
 
   console.log(`\n========================================`)
   console.log(`  Batch Downloader`)
-  console.log(`  Links count: ${urls.length}`)
-  console.log(`  Target:      ${outputDir}`)
+  console.log(`  Input:     ${path.basename(filePath)}`)
+  console.log(`  Links:     ${urls.length}`)
+  console.log(`  Output:    ${outputDir}`)
   console.log(`========================================\n`)
 
+  // Resolve 1fichier links upfront if using aria2c
   const resolvedUrls = []
   for (let i = 0; i < urls.length; i++) {
     const u = urls[i]
@@ -479,133 +484,26 @@ async function downloadUrlsList(urls, outputDir, options = {}) {
   if (aria2Path && resolvedUrls.length > 0) {
     await downloadWithAria2(aria2Path, resolvedUrls, outputDir, options)
   } else {
-    for (let i = 0; i < resolvedUrls.length; i++) {
-      console.log(`[${i + 1}/${resolvedUrls.length}] ${resolvedUrls[i]}`)
+    for (let i = 0; i < urls.length; i++) {
+      console.log(`[${i + 1}/${urls.length}] ${urls[i]}`)
       try {
-        await downloadWithNode(resolvedUrls[i], outputDir, options)
+        await downloadWithNode(urls[i], outputDir, options)
       } catch (err) {
         console.error(`  [ERROR] ${err.message}`)
       }
     }
   }
 
+  // Run post-processing pipeline if enabled
   if (options.autoExtract || options.autoConvert) {
     await runPostProcessing(outputDir, options)
   }
 }
 
-// ─── Click'n'Load (CNL2) HTTP Server ─────────────────────────────────────────
-
-function startCnlServer(options = {}) {
-  const PORT = 9666
-  const server = http.createServer((req, res) => {
-    res.setHeader('Access-Control-Allow-Origin', '*')
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
-
-    if (req.method === 'OPTIONS') {
-      res.writeHead(200)
-      res.end()
-      return
-    }
-
-    const urlPath = req.url.split('?')[0]
-
-    if (req.method === 'GET' && (urlPath === '/flash' || urlPath === '/flash/')) {
-      res.writeHead(200, { 'Content-Type': 'text/plain' })
-      res.end('JDownloader')
-      return
-    }
-
-    if (req.method === 'GET' && urlPath === '/flash/add') {
-      res.writeHead(200, { 'Content-Type': 'text/plain' })
-      res.end('JDownloader')
-      return
-    }
-
-    if (req.method === 'POST' && urlPath.includes('addcrypted2')) {
-      let body = ''
-      req.on('data', (chunk) => { body += chunk })
-      req.on('end', async () => {
-        try {
-          const params = new URLSearchParams(body)
-          const crypted = params.get('crypted')
-          const jk = params.get('jk')
-          const packageName = params.get('package') || `CNL_Download_${Date.now()}`
-
-          if (!crypted || !jk) {
-            res.writeHead(400, { 'Content-Type': 'text/plain' })
-            res.end('Missing crypted or jk')
-            return
-          }
-
-          console.log(`\n[CNL] Received Click'n'Load package: ${packageName}`)
-          const decryptedUrls = decryptCnl2(crypted, jk)
-          console.log(`[CNL] Successfully decrypted ${decryptedUrls.length} link(s)!`)
-
-          res.writeHead(200, { 'Content-Type': 'text/html' })
-          res.end('success\r\n')
-
-          const outputDir = options.outputDir
-            ? path.resolve(options.outputDir)
-            : path.join(process.cwd(), `${packageName}_downloads`)
-
-          await downloadUrlsList(decryptedUrls, outputDir, options)
-        } catch (err) {
-          console.error(`[CNL ERROR] ${err.message}`)
-          res.writeHead(500, { 'Content-Type': 'text/plain' })
-          res.end('Error')
-        }
-      })
-      return
-    }
-
-    res.writeHead(404)
-    res.end()
-  })
-
-  server.listen(PORT, '127.0.0.1', () => {
-    console.log(`[CNL SERVER] Listening on http://127.0.0.1:${PORT}`)
-    console.log(`-> Click "Click'n'Load" on Filecrypt in your browser and it will download automatically!\n`)
-  })
-
-  return server
-}
-
-// ─── Input File Processor ────────────────────────────────────────────────────
-
-async function processInputFile(filePath, options = {}) {
-  const fileStat = await stat(filePath)
-  if (!fileStat.isFile()) throw new Error(`Not a file: ${filePath}`)
-
-  const fileExt = path.extname(filePath).toLowerCase()
-  const baseName = path.parse(filePath).name
-  const parentDir = path.dirname(filePath)
-
-  const outputDir = options.outputDir
-    ? path.resolve(options.outputDir)
-    : path.join(parentDir, `${baseName}_downloads`)
-
-  const rawContent = await readFile(filePath, 'utf8')
-  let urls = []
-
-  if (fileExt === '.dlc') {
-    urls = await decryptDlc(rawContent)
-  } else {
-    urls = rawContent
-      .split(/\r?\n/)
-      .map(cleanUrl)
-      .filter((line) => /^https?:\/\//i.test(line))
-  }
-
-  if (urls.length === 0) throw new Error('No valid download URLs found in file.')
-  await downloadUrlsList(urls, outputDir, options)
-}
-
 // ─── Watcher Mode ────────────────────────────────────────────────────────────
 
 async function startWatcher(watchDir, options = {}) {
-  console.log(`\n[WATCHER] Monitoring: ${watchDir}`)
+  console.log(`\n[WATCHER] Monitoring folder: ${watchDir}`)
   console.log(`Drop any .txt (with links) or .dlc file into this folder to download automatically.\n`)
 
   const processed = new Set()
@@ -620,7 +518,7 @@ async function startWatcher(watchDir, options = {}) {
           console.log(`\n[WATCHER] New file detected: ${f}`)
           try {
             await processInputFile(fullPath, options)
-            console.log(`[WATCHER] Finished: ${f}\n`)
+            console.log(`[WATCHER] Finished processing: ${f}\n`)
           } catch (err) {
             console.error(`[WATCHER ERROR] ${f}: ${err.message}\n`)
           }
@@ -630,50 +528,27 @@ async function startWatcher(watchDir, options = {}) {
   }, 2500)
 }
 
-// ─── Interactive Console Mode ────────────────────────────────────────────────
-
-async function promptInteractive(options) {
-  startCnlServer(options)
-
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
-  console.log('You can also paste links or a Filecrypt container URL below:')
-
-  rl.question('> ', async (answer) => {
-    const input = answer.trim()
-    if (!input) return
-
-    if (input.startsWith('http')) {
-      const outputDir = options.outputDir || path.join(process.cwd(), 'downloads')
-      await downloadUrlsList([input], outputDir, options)
-    } else if (existsSync(input)) {
-      await processInputFile(input, options)
-    }
-  })
-}
-
 // ─── CLI Entry Point ─────────────────────────────────────────────────────────
 
 function usage() {
   console.error(
-    'Usage: node download.mjs [file.txt | file.dlc | url] [options]\n' +
-    '       node download.mjs --server\n' +
-    '       node download.mjs --watch [folder]\n' +
+    'Usage: node download.mjs <links.txt|container.dlc> [options]\n' +
+    '       node download.mjs --watch [folder] [options]\n' +
     '\n' +
-    'Performance Options:\n' +
+    'Speed Options:\n' +
     '  --connections <n>     Parallel connections per file with aria2c (default: 16)\n' +
     '  --concurrent <n>      Concurrent files being downloaded (default: 4)\n' +
     '  --no-aria2            Disable aria2c and use Node native streaming\n' +
     '\n' +
     'Pipeline Options:\n' +
     '  --auto-extract        Auto-extract CBR, CBZ, ZIP, RAR and flatten subfolders\n' +
-    '  --clean-archives      Delete archives after extraction\n' +
+    '  --clean-archives      Delete archives after extraction to save disk space\n' +
     '  --auto-convert        Auto-convert extracted PDFs to lossless CBZ/JPG\n' +
     '\n' +
-    'Modes:\n' +
-    '  --server, --cnl       Run Click\'n\'Load background server (captures Filecrypt 1-click)\n' +
-    '  --watch [folder]      Watch folder mode (auto-downloads any new .txt/.dlc)\n' +
+    'General Options:\n' +
     '  --output-dir <dir>    Destination directory\n' +
-    '  --api-key <key>       1fichier API key\n' +
+    '  --api-key <key>       1fichier API key (bypasses free waiting time)\n' +
+    '  --watch [folder]      Watch folder mode (auto-downloads any new .txt/.dlc)\n' +
     '  --help, -h            Show this help message\n'
   )
 }
@@ -684,8 +559,7 @@ function parseArgs(args) {
   let apiKey = null
   let watchMode = false
   let watchDir = null
-  let serverMode = false
-  let autoExtract = true
+  let autoExtract = false
   let cleanArchives = false
   let autoConvert = false
   let noAria2 = false
@@ -700,15 +574,13 @@ function parseArgs(args) {
       outputDir = args[++i]
     } else if (args[i] === '--api-key') {
       apiKey = args[++i]
-    } else if (args[i] === '--server' || args[i] === '--cnl') {
-      serverMode = true
     } else if (args[i] === '--watch') {
       watchMode = true
       if (args[i + 1] && !args[i + 1].startsWith('-')) {
         watchDir = args[++i]
       }
-    } else if (args[i] === '--no-extract') {
-      autoExtract = false
+    } else if (args[i] === '--auto-extract') {
+      autoExtract = true
     } else if (args[i] === '--clean-archives') {
       cleanArchives = true
     } else if (args[i] === '--auto-convert') {
@@ -726,13 +598,31 @@ function parseArgs(args) {
     }
   }
 
+  if (watchMode) {
+    return {
+      watchMode: true,
+      watchDir: path.resolve(watchDir || process.cwd()),
+      outputDir,
+      apiKey,
+      autoExtract,
+      cleanArchives,
+      autoConvert,
+      noAria2,
+      connections,
+      concurrent,
+    }
+  }
+
+  if (!input) {
+    usage()
+    process.exitCode = 2
+    return null
+  }
+
   return {
-    input: input ? (input.startsWith('http') ? input : path.resolve(input)) : null,
+    input: path.resolve(input),
     outputDir,
     apiKey,
-    watchMode,
-    watchDir: path.resolve(watchDir || process.cwd()),
-    serverMode,
     autoExtract,
     cleanArchives,
     autoConvert,
@@ -745,19 +635,10 @@ function parseArgs(args) {
 try {
   const args = parseArgs(process.argv.slice(2))
   if (args) {
-    if (args.serverMode) {
-      startCnlServer(args)
-    } else if (args.watchMode) {
-      startWatcher(args.watchDir, args)
-    } else if (args.input) {
-      if (args.input.startsWith('http')) {
-        const out = args.outputDir || path.join(process.cwd(), 'downloads')
-        await downloadUrlsList([args.input], out, args)
-      } else {
-        await processInputFile(args.input, args)
-      }
+    if (args.watchMode) {
+      await startWatcher(args.watchDir, args)
     } else {
-      await promptInteractive(args)
+      await processInputFile(args.input, args)
     }
   }
 } catch (err) {
