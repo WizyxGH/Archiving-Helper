@@ -37,6 +37,3 @@ Converts legacy or proprietary `.cbr` comic archives into open standard `.cbz` a
 ### 🧪 Automated CI/CD
 Includes a zero-dependency unit test suite executed across Node.js 18, 20, and 22 on Linux, macOS, and Windows via GitHub Actions.
 
----
-
-*I often archive comic books. As it takes me a lot of time, I've created little scripts to automate this process and I've decided to share them with the world so that everyone can benefit from them.*
