@@ -1,0 +1,3 @@
+bin/
+*_downloads/
+.aria2_input_*.txt
