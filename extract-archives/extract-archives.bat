@@ -8,27 +8,27 @@ set "EXTENSIONS=.cbr .cbz .zip .rar"
 
 echo.
 echo =============================
-echo   Début de l'extraction
+echo   Starting extraction
 echo =============================
 echo.
 
-:: Aller dans le dossier cible
+:: Change to target directory
 cd /d "%INPUT_FOLDER%" || (
-    echo Le dossier d'entrée est introuvable.
+    echo Input folder not found.
     pause
     exit /b
 )
 
-:: Parcourir les fichiers
+:: Iterate through files
 for %%F in (*.*) do (
     set "file=%%F"
     set "ext=%%~xF"
     set "ext=!ext:~1!"
     
-    :: Vérifie si l'extension fait partie des archives autorisées
+    :: Check if extension is in allowed archives
     for %%E in (%EXTENSIONS%) do (
         if /I ".!ext!"=="%%E" (
-            echo Extraction de !file!...
+            echo Extracting !file!...
 
             set "folderName=%%~nF"
             mkdir "!folderName!" >nul 2>&1
@@ -39,18 +39,18 @@ for %%F in (*.*) do (
                 call :flatten ".\!folderName!"
                 call :count_files ".\!folderName!"
             ) else (
-                echo [ERREUR] Extraction échouée : !file!
+                echo [ERROR] Extraction failed: !file!
             )
         )
     )
 )
 
 echo.
-echo Extraction terminée. Appuyez sur une touche pour fermer...
+echo Extraction complete. Press any key to exit...
 pause
 exit /b
 
-:: === Fonction FLATTEN pour simplifier la structure ===
+:: === FLATTEN function to simplify nested directory structure ===
 :flatten
 set "target=%~1"
 
@@ -69,7 +69,7 @@ for /d %%D in ("%target%\*") do (
 )
 
 if "%filecount%"=="0" if "%foldercount%"=="1" (
-    echo Réduction : !subfolder! vers !target!
+    echo Flattening: !subfolder! into !target!
 
     if /I not "!subfolder!"=="!target!" (
         for /f "delims=" %%F in ('dir /b /a "%subfolder%"') do (
@@ -82,13 +82,13 @@ if "%filecount%"=="0" if "%foldercount%"=="1" (
 
 exit /b
 
-:: === Fonction COUNT_FILES pour compter les fichiers dans le dossier final ===
+:: === COUNT_FILES function to count files in final directory ===
 :count_files
 set "target=%~1"
 set "finalcount=0"
 
 for /f %%C in ('dir /a-d /b /s "%target%" ^| find /c /v ""') do set finalcount=%%C
 
-echo Nombre de fichiers dans !target! : !finalcount!
+echo File count in !target!: !finalcount!
 
 exit /b

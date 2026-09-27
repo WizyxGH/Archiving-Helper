@@ -1,15 +1,15 @@
-# Conversion WebP → JPG
+# WebP → JPG Conversion
 
-Convertit tous les fichiers `.webp` du dossier courant en `.jpg` via ImageMagick.
+Converts all `.webp` files in the current folder to `.jpg` using ImageMagick.
 
-## Prérequis
+## Prerequisites
 
-- [ImageMagick](https://imagemagick.org/) installé et accessible dans le `PATH` (`magick`)
+- [ImageMagick](https://imagemagick.org/) installed and available in `PATH` (`magick`)
 
-## Utilisation
+## Usage
 
-1. **Copie** `convert-webp-to-jpg.bat` dans le dossier contenant les fichiers `.webp`
-2. **Double-clique** sur le script
-3. Réponds à la question : supprimer ou conserver les `.webp` originaux
+1. **Copy** `convert-webp-to-jpg.bat` into the folder containing `.webp` files
+2. **Double-click** the script
+3. Answer the prompt: delete or keep original `.webp` files
 
-Le script convertit chaque fichier et affiche le résultat. Si un fichier `.jpg` n'est pas créé, une erreur est signalée.
+The script converts each file and displays the result. If a `.jpg` file is not created, an error is reported.

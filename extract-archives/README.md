@@ -1,28 +1,28 @@
-# Extraction d'archives
+# Archive Extraction
 
-Extrait automatiquement tous les fichiers CBR, CBZ, ZIP et RAR d'un dossier, et simplifie la structure des sous-dossiers.
+Automatically extracts all CBR, CBZ, ZIP, and RAR files from a folder and simplifies nested subfolder structures (flattening).
 
-## Prérequis
+## Prerequisites
 
-- [WinRAR](https://www.winrar.fr/) installé dans `C:\Program Files\WinRAR\`
+- [WinRAR](https://www.win-rar.com/) installed in `C:\Program Files\WinRAR\` (or update the path in the script)
 
 ## Configuration
 
-Édite les variables en haut du script avant de l'utiliser :
+Edit the variables at the top of the script before running:
 
 ```bat
 set "WINRAR_PATH=C:\Program Files\WinRAR\WinRAR.exe"
-set "INPUT_FOLDER=C:\chemin\vers\mes\archives"
+set "INPUT_FOLDER=C:\path\to\my\archives"
 set "EXTENSIONS=.cbr .cbz .zip .rar"
 ```
 
-## Fonctionnement
+## How It Works
 
-1. Parcourt tous les fichiers du dossier `INPUT_FOLDER`
-2. Pour chaque archive reconnue, crée un sous-dossier du même nom et extrait dedans
-3. **Flatten** : si le contenu extrait ne contient qu'un seul sous-dossier, remonte les fichiers d'un niveau (évite la double imbrication)
-4. Affiche le nombre de fichiers dans chaque dossier final
+1. Scans all files in `INPUT_FOLDER`
+2. For each recognized archive, creates a subfolder of the same name and extracts into it
+3. **Flatten**: if the extracted content contains only a single subfolder, moves files up one level (prevents redundant nested folders)
+4. Displays the final file count for each extracted folder
 
-## Utilisation
+## Usage
 
-Double-clique sur `extract-archives.bat` après avoir configuré les variables.
+Double-click `extract-archives.bat` after configuring the variables.

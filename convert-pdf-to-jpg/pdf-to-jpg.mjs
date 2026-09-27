@@ -98,7 +98,7 @@ async function createCbz(jpgDir, archivePath) {
   ], { encoding: 'utf8' })
 
   if (ps.status !== 0) {
-    throw new Error(`Compress-Archive a échoué : ${(ps.stderr || ps.stdout || '').trim()}`)
+    throw new Error(`Compress-Archive failed: ${(ps.stderr || ps.stdout || '').trim()}`)
   }
   await rename(tempZip, archivePath)
 }
@@ -121,7 +121,7 @@ async function createCbr(jpgDir, archivePath, rarExe) {
     { encoding: 'utf8', shell: true },
   )
   if (result.status !== 0) {
-    throw new Error(`WinRAR a échoué (code ${result.status}) : ${(result.stderr || result.stdout || '').trim()}`)
+    throw new Error(`WinRAR failed (exit code ${result.status}): ${(result.stderr || result.stdout || '').trim()}`)
   }
 }
 
@@ -132,18 +132,18 @@ function usage() {
     'Usage: node pdf-to-jpg.mjs <file.pdf> [options]\n' +
     '\n' +
     'Options:\n' +
-    '  --output-dir <dir>       Dossier de sortie pour les JPGs (créé automatiquement)\n' +
-    '  --output-name <template> Template du nom de fichier (sans extension)\n' +
-    `                           Défaut : "${DEFAULT_OUTPUT_NAME_TEMPLATE}"\n` +
-    '                           Variables : {name}, {page}, {page:03d}, {total},\n' +
-    '                                       {date}, {year}, {month}, {day}\n' +
-    '  --archive <cbr|cbz>      Crée une archive CBR (RAR) ou CBZ (ZIP) après extraction\n' +
-    '                           CBR requiert WinRAR ; CBZ utilise PowerShell\n' +
-    '  --keep-jpgs              Conserve le dossier de JPGs après création de l\'archive\n' +
-    '                           (par défaut le dossier est supprimé si --archive est utilisé)\n' +
-    '  --workers <count>        Nombre de workers parallèles (1–32, défaut : auto)\n' +
+    '  --output-dir <dir>       Output folder for JPG files (created automatically)\n' +
+    '  --output-name <template> Filename template (without extension)\n' +
+    `                           Default: "${DEFAULT_OUTPUT_NAME_TEMPLATE}"\n` +
+    '                           Variables: {name}, {page}, {page:03d}, {total},\n' +
+    '                                      {date}, {year}, {month}, {day}\n' +
+    '  --archive <cbr|cbz>      Create a CBR (RAR) or CBZ (ZIP) archive after extraction\n' +
+    '                           CBR requires WinRAR; CBZ uses PowerShell\n' +
+    '  --keep-jpgs              Keep JPG folder after creating archive\n' +
+    '                           (by default folder is deleted if --archive is used)\n' +
+    '  --workers <count>        Parallel worker count (1–32, default: auto)\n' +
     '\n' +
-    'Extrait et optimise sans perte les pages JPEG d\'un PDF sans le rendre.',
+    'Losslessly extracts and optimizes JPEG pages from a PDF without re-rendering.',
   )
 }
 
@@ -210,7 +210,7 @@ function visibleCrop(bytes, visible) {
   const y = snap(visible.y, grid.h, visible.imageH)
   const w = Math.min(visible.imageW, Math.round(visible.x + visible.w)) - x
   const h = Math.min(visible.imageH, Math.round(visible.y + visible.h)) - y
-  if (w <= 0 || h <= 0) throw new Error('La zone visible du PDF est invalide.')
+  if (w <= 0 || h <= 0) throw new Error('Invalid visible PDF region.')
   return isu.jpegCrop.crop(bytes, { x, y, w, h }).bytes
 }
 
@@ -230,7 +230,7 @@ function optimizeInWorker(worker, bytes, visible) {
       else resolve(new Uint8Array(message.bytes))
     }
     const onError = (error) => { cleanup(); reject(error) }
-    const onExit = (code) => { cleanup(); reject(new Error(`Le worker JPEG s'est arrêté (code ${code}).`)) }
+    const onExit = (code) => { cleanup(); reject(new Error(`JPEG worker stopped (code ${code}).`)) }
     worker.once('message', onMessage)
     worker.once('error', onError)
     worker.once('exit', onExit)
@@ -250,7 +250,7 @@ async function convert(input, requestedOutputDir, outputNameTemplate, archive, k
 
   try {
     await stat(outputDir)
-    throw new Error(`Le dossier de sortie existe déjà : ${outputDir}`)
+    throw new Error(`Output directory already exists: ${outputDir}`)
   } catch (error) {
     if (error.code !== 'ENOENT') throw error
   }
@@ -265,8 +265,8 @@ async function convert(input, requestedOutputDir, outputNameTemplate, archive, k
     rarExe = findRar()
     if (!rarExe) {
       throw new Error(
-        'WinRAR (Rar.exe) introuvable. Installez WinRAR ou ajoutez-le au PATH.\n' +
-        '  Chemins vérifiés : PATH, C:\\Program Files\\WinRAR\\, C:\\Program Files (x86)\\WinRAR\\',
+        'WinRAR (Rar.exe) not found. Install WinRAR or add it to PATH.\n' +
+        '  Checked paths: PATH, C:\\Program Files\\WinRAR\\, C:\\Program Files (x86)\\WinRAR\\',
       )
     }
   }
@@ -284,7 +284,7 @@ async function convert(input, requestedOutputDir, outputNameTemplate, archive, k
           let read = 0
           while (read < length) {
             const result = await handle.read(bytes, read, length - read, start + read)
-            if (!result.bytesRead) throw new Error('Lecture incomplète du PDF.')
+            if (!result.bytesRead) throw new Error('Incomplete read of PDF file.')
             read += result.bytesRead
           }
           return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
@@ -305,9 +305,9 @@ async function convert(input, requestedOutputDir, outputNameTemplate, archive, k
     result = await isu.pdfImages(file)
     if (result.skipped.length) {
       throw new Error(
-        `${result.skipped.length} page(s) ne sont pas une image JPEG unique ` +
+        `${result.skipped.length} page(s) are not a single JPEG image ` +
         `(${result.skipped.slice(0, 8).join(', ')}${result.skipped.length > 8 ? ', \u2026' : ''}). ` +
-        `Aucune sortie partielle n\u2019a \u00e9t\u00e9 conserv\u00e9e.`,
+        `No partial output was retained.`,
       )
     }
     await mkdir(parent, { recursive: true })
@@ -346,7 +346,7 @@ async function convert(input, requestedOutputDir, outputNameTemplate, archive, k
         totalOutputBytes += outputBytes.length
         console.log(
           `[${index + 1}/${result.files.length}] ${outputFilename}` +
-          (visible ? ' (recadr\u00e9e selon la zone visible du PDF)' : '') +
+          (visible ? ' (cropped to PDF visible area)' : '') +
           ` \u2014 ${formatBytes(sourceBytes.length)} \u2192 ${formatBytes(outputBytes.length)}`,
         )
       }
@@ -364,19 +364,19 @@ async function convert(input, requestedOutputDir, outputNameTemplate, archive, k
   }
 
   const saved = totalInputBytes - totalOutputBytes
-  console.log(`\n${result.files.length} page(s) enregistr\u00e9e(s) dans : ${outputDir}`)
+  console.log(`\n${result.files.length} page(s) saved to: ${outputDir}`)
   console.log(
-    `JPEG extraits : ${formatBytes(totalInputBytes)} \u00b7 sortie : ${formatBytes(totalOutputBytes)}` +
-    (saved > 0 ? ` \u00b7 \u00e9conomis\u00e9s : ${formatBytes(saved)}` : ''),
+    `Extracted JPEG: ${formatBytes(totalInputBytes)} \u00b7 output: ${formatBytes(totalOutputBytes)}` +
+    (saved > 0 ? ` \u00b7 saved: ${formatBytes(saved)}` : ''),
   )
-  if (workers.length > 1) console.log(`Optimisation JPEG avec ${workers.length} workers.`)
+  if (workers.length > 1) console.log(`JPEG optimization with ${workers.length} workers.`)
 
   // ── Archive creation ──────────────────────────────────────────────────────
   if (archive) {
-    console.log(`\nCr\u00e9ation de l\u2019archive ${archive.toUpperCase()} : ${archivePath}`)
+    console.log(`\nCreating ${archive.toUpperCase()} archive: ${archivePath}`)
     try {
       await stat(archivePath)
-      throw new Error(`L\u2019archive existe d\u00e9j\u00e0 : ${archivePath}`)
+      throw new Error(`Archive already exists: ${archivePath}`)
     } catch (e) {
       if (e.code !== 'ENOENT') throw e
     }
@@ -388,19 +388,19 @@ async function convert(input, requestedOutputDir, outputNameTemplate, archive, k
     }
 
     const archiveStat = await stat(archivePath)
-    console.log(`Archive cr\u00e9\u00e9e : ${formatBytes(archiveStat.size)}`)
+    console.log(`Archive created: ${formatBytes(archiveStat.size)}`)
 
     if (!keepJpgs) {
       await rm(outputDir, { recursive: true, force: true })
-      console.log(`Dossier JPG supprim\u00e9 (utilisez --keep-jpgs pour le conserver).`)
+      console.log(`JPG folder deleted (use --keep-jpgs to keep it).`)
     }
   }
 }
 
 function formatBytes(bytes) {
   return bytes >= 1024 * 1024
-    ? `${(bytes / (1024 * 1024)).toFixed(1)} Mo`
-    : `${(bytes / 1024).toFixed(1)} Ko`
+    ? `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+    : `${(bytes / 1024).toFixed(1)} KB`
 }
 
 // ─── Entry point ─────────────────────────────────────────────────────────────
@@ -409,6 +409,6 @@ try {
   const args = parseArgs(process.argv.slice(2))
   if (args) await convert(args.input, args.outputDir, args.outputName, args.archive, args.keepJpgs, args.workers)
 } catch (error) {
-  console.error(`Erreur : ${error.message}`)
+  console.error(`Error: ${error.message}`)
   process.exitCode = 1
 }

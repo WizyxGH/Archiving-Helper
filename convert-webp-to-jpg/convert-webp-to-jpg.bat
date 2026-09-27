@@ -2,15 +2,15 @@
 chcp 65001 >nul
 setlocal enabledelayedexpansion
 
-:: Récupère le dossier contenant ce script
+:: Get directory containing this script
 set "SOURCE_FOLDER=%~dp0"
 cd /d "%SOURCE_FOLDER%"
 
-echo Conversion des fichiers .webp en .jpg dans : "%SOURCE_FOLDER%"
+echo Converting .webp files to .jpg in: "%SOURCE_FOLDER%"
 echo.
 
-:: Demande à l'utilisateur s'il veut supprimer les fichiers .webp après conversion
-choice /c ON /m "Souhaites-tu supprimer les fichiers .webp après conversion ? (O/N)"
+:: Ask user if they want to delete original .webp files after conversion
+choice /c YN /m "Do you want to delete .webp files after conversion? (Y/N)"
 if errorlevel 2 (
     set "DELETE_ORIGINAL=false"
 ) else (
@@ -18,25 +18,25 @@ if errorlevel 2 (
 )
 echo.
 
-:: Boucle sur tous les fichiers .webp dans le dossier
+:: Loop through all .webp files in folder
 for %%f in (*.webp) do (
-    echo Conversion de "%%f" en "%%~nf.jpg"...
+    echo Converting "%%f" to "%%~nf.jpg"...
     magick "%%f" "%%~nf.jpg"
 
     if exist "%%~nf.jpg" (
-        echo ✅ Conversion réussie : "%%~nf.jpg"
+        echo ✅ Conversion successful: "%%~nf.jpg"
 
         if "!DELETE_ORIGINAL!"=="true" (
             del "%%f"
-            echo 🗑️  Fichier original "%%f" supprimé.
+            echo 🗑️  Original file "%%f" deleted.
         ) else (
-            echo 📂 Fichier original "%%f" conservé.
+            echo 📂 Original file "%%f" kept.
         )
     ) else (
-        echo ❌ Erreur : le fichier "%%~nf.jpg" n’a pas été créé.
+        echo ❌ Error: file "%%~nf.jpg" was not created.
     )
     echo.
 )
 
-echo Conversion terminée.
+echo Conversion complete.
 pause

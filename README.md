@@ -1,20 +1,20 @@
 # Archiving Helper
 
-Scripts pour automatiser l'archivage de bandes dessinées.
+Scripts to automate comic book and document archiving workflows.
 
-## Scripts disponibles
+## Available Scripts
 
-| Dossier | Description | Dépendance |
-|--------|-------------|------------|
-| [`convert-pdf-to-jpg/`](convert-pdf-to-jpg/) | Extraire les pages JPEG d'un PDF sans perte de qualité | Node.js |
-| [`convert-webp-to-jpg/`](convert-webp-to-jpg/) | Convertir des fichiers WebP en JPG | ImageMagick |
-| [`images-to-pdf/`](images-to-pdf/) | Assembler des images en un seul PDF | ImageMagick |
-| [`extract-archives/`](extract-archives/) | Extraire des archives CBR/CBZ/ZIP/RAR | WinRAR |
+| Directory | Description | Dependency |
+|-----------|-------------|------------|
+| [`convert-pdf-to-jpg/`](convert-pdf-to-jpg/) | Extract JPEG pages from a PDF losslessly without re-rendering | Node.js |
+| [`convert-webp-to-jpg/`](convert-webp-to-jpg/) | Convert WebP files to JPG | ImageMagick |
+| [`images-to-pdf/`](images-to-pdf/) | Assemble images into a single PDF | ImageMagick |
+| [`extract-archives/`](extract-archives/) | Extract CBR/CBZ/ZIP/RAR archives with automatic flattening | WinRAR |
 
-## Utilisation rapide
+## Quick Start
 
-Chaque script s'utilise par **glisser-déposer** ou en ligne de commande depuis son dossier.
-Consultez le `README.md` de chaque sous-dossier pour les détails.
+Each script can be run via **drag-and-drop** or from the command line inside its folder.
+Check each subfolder's `README.md` for specific options and instructions.
 
 ---
 

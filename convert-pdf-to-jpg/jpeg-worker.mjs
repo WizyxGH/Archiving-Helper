@@ -54,7 +54,7 @@ function visibleCrop(bytes, visible) {
   const y = snap(visible.y, grid.h, visible.imageH)
   const w = Math.min(visible.imageW, Math.round(visible.x + visible.w)) - x
   const h = Math.min(visible.imageH, Math.round(visible.y + visible.h)) - y
-  if (w <= 0 || h <= 0) throw new Error('La zone visible du PDF est invalide.')
+  if (w <= 0 || h <= 0) throw new Error('Invalid visible PDF region.')
   return isu.jpegCrop.crop(bytes, { x, y, w, h }).bytes
 }
 

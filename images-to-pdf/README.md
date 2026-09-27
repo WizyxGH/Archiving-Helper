@@ -1,23 +1,23 @@
 # Images → PDF
 
-Assemble toutes les images d'un dossier en un seul fichier PDF via ImageMagick.
+Assembles all images from a folder into a single PDF file using ImageMagick.
 
-## Prérequis
+## Prerequisites
 
-- [ImageMagick](https://imagemagick.org/) installé et accessible dans le `PATH` (`magick`)
+- [ImageMagick](https://imagemagick.org/) installed and available in `PATH` (`magick`)
 
-## Utilisation
+## Usage
 
-1. **Double-clique** sur `images-to-pdf.bat`
-2. Entre le chemin du dossier contenant les images quand demandé
-3. Le PDF est généré dans le dossier courant sous le nom `result.pdf`
+1. **Double-click** `images-to-pdf.bat`
+2. Enter the folder path containing the images when prompted
+3. The output PDF is generated in the current directory as `result.pdf`
 
-## Formats d'image supportés
+## Supported Image Formats
 
 `jpg`, `jpeg`, `png`, `bmp`, `tiff`, `webp`
 
 ## Notes
 
-- Les images sont traitées dans l'ordre alphabétique par extension puis par nom de fichier
-- Si un `result.pdf` existait déjà, il est écrasé
-- Les fichiers temporaires (`temp_N.pdf`) sont supprimés automatiquement
+- Images are processed in alphabetical order by extension and filename
+- If `result.pdf` already exists, it will be overwritten
+- Temporary files (`temp_N.pdf`) are deleted automatically

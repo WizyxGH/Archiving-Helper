@@ -168,27 +168,26 @@
     /** Bytes of the file: a PDF is read at a few precise places, never whole. */
     at(from, len) { return ISU.bytesAt(this.file, from, len) }
     async open() {
-      // Étapes fines : sous Firefox, une erreur venue d'ailleurs (une autre extension qui remplace
-      // des fonctions du navigateur) arrive ici SANS pile. Seul le nom de l'étape dit alors
-      // quelle opération a été refusée — lire des octets, les décoder, ou les découper.
+      // Granular steps: under Firefox, an error from elsewhere (another extension) arrives here WITHOUT a stack trace.
+      // Only the step name indicates which operation failed — reading bytes, decoding them, or cropping.
       const tailLen = Math.min(this.file.size, 2048)
-      ISU.stage('ouverture du PDF : lecture de la fin du fichier')
+      ISU.stage('opening PDF: reading end of file')
       const tailBytes = await this.at(this.file.size - tailLen, tailLen)
-      ISU.stage('ouverture du PDF : décodage de la fin du fichier')
+      ISU.stage('opening PDF: decoding end of file')
       const tail = latin.decode(tailBytes)
       const m = tail.lastIndexOf('startxref')
-      if (m < 0) throw new Error('ce n’est pas un PDF lisible (pas de table de références)')
+      if (m < 0) throw new Error('Not a readable PDF (missing cross-reference table)')
       const start = Number((tail.slice(m + 9).match(/\d+/) || [])[0])
-      if (!Number.isFinite(start)) throw new Error('table de références introuvable')
+      if (!Number.isFinite(start)) throw new Error('Cross-reference table not found')
       const seen = new Set()
       let at = start
       while (Number.isFinite(at) && at >= 0 && !seen.has(at)) {
         seen.add(at)
-        ISU.stage(`ouverture du PDF : table des références (octet ${at})`)
+        ISU.stage(`opening PDF: cross-reference table (byte ${at})`)
         at = await this.readXrefAt(at)
       }
-      if (this.trailer.Encrypt) throw new Error('PDF protégé (chiffré) : illisible sans le mot de passe')
-      if (!this.trailer.Root) throw new Error('structure du PDF incomplète (pas de catalogue)')
+      if (this.trailer.Encrypt) throw new Error('Encrypted PDF: password required')
+      if (!this.trailer.Root) throw new Error('Incomplete PDF structure (missing catalog)')
     }
     /** Reads one cross-reference section (classic table or stream); returns the /Prev offset. */
     async readXrefAt(offset) {
@@ -218,10 +217,10 @@
       }
       // Cross-reference stream: an ordinary object whose data is the table.
       const obj = await this.readObjectFrom(buf, offset)
-      if (!obj || !obj.dict || obj.dict.Type !== 'XRef') throw new Error('table de références illisible')
+      if (!obj || !obj.dict || obj.dict.Type !== 'XRef') throw new Error('Corrupted or unreadable cross-reference table')
       const data = await this.streamData(obj)
       const w = (obj.dict.W || []).map(Number)
-      if (w.length < 3) throw new Error('table de références illisible')
+      if (w.length < 3) throw new Error('Corrupted or unreadable cross-reference table')
       const size = Number(obj.dict.Size) || 0
       const index = obj.dict.Index && obj.dict.Index.length ? obj.dict.Index.map(Number) : [0, size]
       const rowLen = w[0] + w[1] + w[2]
@@ -238,56 +237,61 @@
         }
       }
       for (const k of Object.keys(obj.dict)) if (!(k in this.trailer)) this.trailer[k] = obj.dict[k]
-      return Number.isFinite(obj.dict.Prev) ? Number(obj.dict.Prev) : null
+      return Number.isFinite(obj.dict.Prev) ? obj.dict.Prev : null
     }
-    /** Parses "N G obj … [stream]" out of a window; returns { dict, dataAt, raw }. */
-    async readObjectFrom(buf, base) {
-      const lex = new Lex(buf)
-      if (lex.number() === null || lex.number() === null || !lex.take('obj')) return null
-      const dict = lex.obj()
-      lex.ws()
-      if (!lex.take('stream')) return { dict, dataAt: null }
-      // The keyword is followed by CRLF or LF, and the data starts right after.
-      if (buf[lex.p] === 13) lex.p++
-      if (buf[lex.p] === 10) lex.p++
-      return { dict, dataAt: base + lex.p }
-    }
+    /** An indirect object: its parsed dictionary and where its stream data begins, or null. */
     async object(num) {
       if (this.objCache.has(num)) return this.objCache.get(num)
-      const e = this.xref.get(num)
-      let out = null
-      if (e && e.offset !== undefined) {
-        let buf = await this.at(e.offset, OBJ_WINDOW)
-        out = await this.readObjectFrom(buf, e.offset)
-        // A dictionary longer than the window would parse short: retry once, much wider.
-        if (out && out.dict && out.dataAt === null && buf.length === OBJ_WINDOW) {
-          buf = await this.at(e.offset, OBJ_WINDOW * 8)
-          out = await this.readObjectFrom(buf, e.offset) || out
+      const loc = this.xref.get(num)
+      if (!loc) return null
+      let res = null
+      if (loc.offset !== undefined) {
+        let win = OBJ_WINDOW
+        for (;;) {
+          const buf = await this.at(loc.offset, win)
+          res = await this.readObjectFrom(buf, loc.offset)
+          if (res || win >= 1048576) break
+          win *= 4
         }
-      } else if (e && e.stm !== undefined) {
-        const objs = await this.objStm(e.stm)
-        out = objs.get(num) ?? null
+      } else if (loc.stm !== undefined) {
+        const map = await this.objectStream(loc.stm)
+        res = map.get(num) || null
       }
-      this.objCache.set(num, out)
-      return out
+      if (res) this.objCache.set(num, res)
+      return res
     }
-    /** Objects packed inside an object stream (never a stream themselves, by specification). */
-    async objStm(num) {
-      if (this.stmCache.has(num)) return this.stmCache.get(num)
-      const map = new Map()
-      this.stmCache.set(num, map)
-      const holder = await this.object(num)
-      if (!holder || holder.dataAt === null) return map
-      const data = await this.streamData(holder)
-      const n = Number(await this.value(holder.dict.N)) || 0
-      const first = Number(await this.value(holder.dict.First)) || 0
-      const head = new Lex(data.subarray(0, first))
-      const pairs = []
-      for (let i = 0; i < n; i++) {
-        const objNum = head.number(), off = head.number()
-        if (objNum === null || off === null) break
-        pairs.push([objNum, off])
+    async readObjectFrom(buf, origin) {
+      const lex = new Lex(buf)
+      const num = lex.number(), gen = lex.number()
+      if (num === null || gen === null || !lex.take('obj')) return null
+      const dict = lex.obj()
+      lex.ws()
+      let dataAt = null
+      if (lex.take('stream')) {
+        let p = lex.p
+        if (buf[p] === 13 && buf[p + 1] === 10) p += 2
+        else if (buf[p] === 10 || buf[p] === 13) p++
+        dataAt = origin + p
       }
+      return { num, dict, dataAt }
+    }
+    /** Reads an /ObjStm object stream and caches the objects packed inside it. */
+    async objectStream(stmNum) {
+      if (this.stmCache.has(stmNum)) return this.stmCache.get(stmNum)
+      const stmObj = await this.object(stmNum)
+      if (!stmObj) return new Map()
+      const data = await this.streamData(stmObj)
+      const count = Number(stmObj.dict.N) || 0
+      const first = Number(stmObj.dict.First) || 0
+      const lexHdr = new Lex(data)
+      const pairs = []
+      for (let i = 0; i < count; i++) {
+        const num = lexHdr.number(), off = lexHdr.number()
+        if (num === null || off === null) break
+        pairs.push([num, off])
+      }
+      const map = new Map()
+      this.stmCache.set(stmNum, map)
       for (const [objNum, off] of pairs) {
         const lex = new Lex(data, first + off)
         map.set(objNum, { dict: lex.obj(), dataAt: null })
@@ -297,12 +301,12 @@
     /** Decoded content of a stream object (Flate only — the ones this file reads are Flate or plain). */
     async streamData(obj) {
       const len = Number(await this.value(obj.dict.Length))
-      if (!Number.isFinite(len)) throw new Error('longueur de flux inconnue')
+      if (!Number.isFinite(len)) throw new Error('Unknown stream length')
       let data = await this.at(obj.dataAt, len)
       const filters = [].concat(obj.dict.Filter || [])
       for (const f of filters) {
-        if (f === 'FlateDecode') { ISU.stage(`lecture du PDF : décompression d'un flux (octet ${obj.dataAt})`); data = await ISU.inflate(data) }
-        else throw new Error(`filtre non géré (${f})`)
+        if (f === 'FlateDecode') { ISU.stage(`reading PDF: decompressing stream (byte ${obj.dataAt})`); data = await ISU.inflate(data) }
+        else throw new Error(`Unsupported filter (${f})`)
       }
       const parms = [].concat(obj.dict.DecodeParms || [])[0]
       const dp = parms instanceof Ref ? (await this.object(parms.num))?.dict : parms
@@ -324,7 +328,7 @@
      */
     async pages() {
       const root = await this.value(this.trailer.Root)
-      if (!root) throw new Error('catalogue du PDF illisible')
+      if (!root) throw new Error('Unreadable PDF catalog')
       const out = []
       const seen = new Set()
       const walk = async (node, inh, depth) => {
@@ -339,8 +343,7 @@
         }
         if (Array.isArray(d.Kids)) { for (const k of d.Kids) await walk(k, next, depth + 1); return }
         if (d.Type === 'Page' || d.Contents || d.MediaBox) {
-          // La CropBox est ce qu'un lecteur affiche ; à défaut, la MediaBox. Intersection des deux
-          // comme le veut la spécification : une CropBox qui déborde n'agrandit pas la page.
+          // The CropBox is what a reader displays; defaulting to MediaBox. Intersection of both per spec.
           out.push({ resources: next.resources, box: inter(next.crop, next.media) || next.media || next.crop || null, contents: d.Contents ?? null })
         }
       }
@@ -365,7 +368,7 @@
     }
     /** The page's content stream, decompressed and concatenated (a page may split it in parts). */
     async content(ref) {
-      try { return await this._content(ref) } catch { return null } // même raison que `rect`
+      try { return await this._content(ref) } catch { return null } // same reason as rect
     }
     async _content(ref) {
       const parts = []
@@ -374,7 +377,7 @@
         if (!(it instanceof Ref)) continue
         const o = await this.object(it.num)
         if (!o) continue
-        try { parts.push(await this.streamData(o)) } catch { /* flux illisible : les autres restent */ }
+        try { parts.push(await this.streamData(o)) } catch { /* unreadable stream: others remain */ }
       }
       if (!parts.length) return null
       let n = 0
@@ -422,7 +425,7 @@
     while ((m = re.exec(text))) {
       if (m[1] !== undefined) { name = m[1]; continue }
       if (m[2] !== undefined) { nums.push(Number(m[2])); if (nums.length > 6) nums.shift(); continue }
-      if (m[3] === undefined) continue // chaîne, commentaire : sans effet ici
+      if (m[3] === undefined) continue // string, comment: no effect here
       const op = m[3]
       if (op === 'q') stack.push(ctm.slice())
       else if (op === 'Q') ctm = stack.pop() || ctm
@@ -448,9 +451,9 @@
     if (!ctm || !box) return null
     const [a, b, c, d, e, f] = ctm
     const span = Math.max(Math.abs(a), Math.abs(d))
-    if (Math.abs(b) > span * 1e-6 || Math.abs(c) > span * 1e-6) return null // pivotée ou cisaillée
+    if (Math.abs(b) > span * 1e-6 || Math.abs(c) > span * 1e-6) return null // rotated or skewed
     if (!(Math.abs(a) > 1e-9 && Math.abs(d) > 1e-9)) return null
-    // u, v : coordonnées dans l'image (unité), v = 0 en BAS. La ligne 0 est donc en v = 1.
+    // u, v: coordinates in the image (unit), v = 0 at the bottom. Row 0 is at v = 1.
     const us = [(box.x0 - e) / a, (box.x1 - e) / a].sort((p, q) => p - q)
     const vs = [(box.y0 - f) / d, (box.y1 - f) / d].sort((p, q) => p - q)
     const x0 = Math.max(0, us[0] * W), x1 = Math.min(W, us[1] * W)
@@ -461,16 +464,16 @@
 
   ISU.pdfImages = async function pdfImages(file) {
     const doc = new Pdf(file)
-    ISU.stage('ouverture du PDF')
+    ISU.stage('opening PDF')
     await doc.open()
-    ISU.stage('lecture de l’arbre des pages')
+    ISU.stage('reading page tree')
     const pages = await doc.pages()
-    if (!pages.length) throw new Error('aucune page trouvée dans ce PDF')
+    if (!pages.length) throw new Error('No pages found in this PDF')
     const base = file.name.replace(/\.[^.]+$/, '')
     const files = [], skipped = []
-    const boxes = new Map() // fichier → partie visible sur la page, ou null
+    const boxes = new Map() // file → visible part on page, or null
     for (let i = 0; i < pages.length; i++) {
-      ISU.stage(`page ${i + 1}/${pages.length} : ressources`)
+      ISU.stage(`page ${i + 1}/${pages.length}: resources`)
       const res = await doc.value(pages[i].resources)
       const xo = await doc.value(res?.XObject)
       const images = []
@@ -485,38 +488,36 @@
       const { obj: img, key } = images[0]
       const filters = [].concat(img.dict.Filter || [])
       if (filters.length !== 1 || filters[0] !== 'DCTDecode') {
-        skipped.push(`p${i + 1} (${filters.join('+') || 'non compressée'})`)
+        skipped.push(`p${i + 1} (${filters.join('+') || 'uncompressed'})`)
         continue
       }
       const len = Number(await doc.value(img.dict.Length))
-      if (!Number.isFinite(len) || len <= 0 || img.dataAt === null || img.dataAt + len > file.size) { skipped.push(`p${i + 1} (flux illisible)`); continue }
+      if (!Number.isFinite(len) || len <= 0 || img.dataAt === null || img.dataAt + len > file.size) { skipped.push(`p${i + 1} (unreadable stream)`); continue }
       // Last check, and the decisive one: the bytes really begin a JPEG.
       const head = await doc.at(img.dataAt, 2)
-      if (head[0] !== 0xff || head[1] !== 0xd8) { skipped.push(`p${i + 1} (données inattendues)`); continue }
+      if (head[0] !== 0xff || head[1] !== 0xd8) { skipped.push(`p${i + 1} (unexpected data)`); continue }
       const name = `${base}_p${String(i + 1).padStart(3, '0')}.jpg`
-      ISU.stage(`page ${i + 1}/${pages.length} : extraction du JPEG`)
+      ISU.stage(`page ${i + 1}/${pages.length}: extracting JPEG`)
       const out = await ISU.fileFrom(file, img.dataAt, len, name, 'image/jpeg')
-      // Ce que la page MONTRE de cette image. Une édition numérique dessine une image d'écran et
-      // n'en affiche que le milieu : le PDF le dit lui-même, exactement, et c'est infiniment plus
-      // sûr que de reconnaître les bandes à leur allure.
+      // What the page SHOWS of this image. Digital editions draw screen-sized images and display only the middle.
       let visible = null
-      ISU.stage(`page ${i + 1}/${pages.length} : géométrie affichée`)
+      ISU.stage(`page ${i + 1}/${pages.length}: displayed geometry`)
       try {
         const W = Number(await doc.value(img.dict.Width)), H = Number(await doc.value(img.dict.Height))
         if (W > 0 && H > 0 && pages[i].box) {
           const content = await doc.content(pages[i].contents)
           const part = content ? visiblePart(placementOf(content, key), pages[i].box, W, H) : null
-          // Une part qui couvre (presque) tout ne vaut pas la peine d'être découpée.
+          // A part covering almost everything is not worth cropping.
           if (part && (part.w < W - 1 || part.h < H - 1)) visible = { ...part, imageW: W, imageH: H }
         }
-      } catch { /* géométrie illisible : la page part entière */ }
+      } catch { /* unreadable geometry: full page kept */ }
       boxes.set(out, visible)
       files.push(out)
     }
     if (!files.length) {
-      throw new Error(`aucune page n’est une image JPEG utilisable (${pages.length} page${pages.length > 1 ? 's' : ''} : ${skipped.slice(0, 4).join(', ')}${skipped.length > 4 ? '…' : ''})`)
+      throw new Error(`No usable JPEG pages found (${pages.length} page${pages.length > 1 ? 's' : ''}: ${skipped.slice(0, 4).join(', ')}${skipped.length > 4 ? '…' : ''})`)
     }
-    ISU.stage('extraction du PDF terminée')
+    ISU.stage('PDF extraction complete')
     return { files, skipped, pages: pages.length, visible: boxes }
   }
 })()
