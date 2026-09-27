@@ -1,68 +1,63 @@
 @echo off
-title Images -> PDF Conversion
+setlocal enabledelayedexpansion
+title Images to PDF
 
-REM === Check ImageMagick installation ===
 where magick >nul 2>nul
 if errorlevel 1 (
-    echo ❌ ImageMagick is not installed or not in PATH.
+    echo [ERROR] ImageMagick is not installed or not in PATH.
+    echo Please install ImageMagick from https://imagemagick.org/
     pause
-    exit /b
+    exit /b 1
 )
 
-REM === Prompt user for folder ===
-echo Please enter the path of the folder containing images:
-set /p input_folder=
+set "TARGET_DIR="
+set "OUTPUT_PDF="
 
-if not exist "%input_folder%" (
-    echo ❌ The folder does not exist!
-    pause
-    exit /b
-)
-
-REM === Output PDF filename ===
-set "output_pdf=result.pdf"
-
-REM === Remove existing PDF to avoid conflicts ===
-if exist "%output_pdf%" del "%output_pdf%"
-
-REM === Allowed extensions ===
-set "ext_list=jpg jpeg png bmp tiff webp"
-
-REM === File counter ===
-set count=0
-set file_list=
-
-echo.
-echo 🔄 Converting...
-
-REM === Loop through images and create temporary PDFs ===
-for %%e in (%ext_list%) do (
-    for %%f in ("%input_folder%\*.%%e") do (
-        if exist "%%f" (
-            set /a count+=1
-            echo Processing !count!: %%~nxf
-            magick "%%f" "temp_!count!.pdf"
-            set "file_list=!file_list! temp_!count!.pdf"
-        )
+if "%~1"=="" (
+    echo Enter the path of the folder containing images (or press Enter for current directory):
+    set /p "TARGET_DIR="
+    if not defined TARGET_DIR set "TARGET_DIR=%CD%"
+) else (
+    if exist "%~1\*" (
+        set "TARGET_DIR=%~f1"
+    ) else (
+        set "TARGET_DIR=%~dp1"
     )
 )
 
-REM === Verify at least one file was processed ===
-if !count! EQU 0 (
-    echo ❌ No image files found in the folder.
+if not exist "%TARGET_DIR%" (
+    echo [ERROR] Folder does not exist: "%TARGET_DIR%"
     pause
-    exit /b
+    exit /b 1
 )
 
-REM === Final merge into output PDF ===
-echo.
-echo 🔗 Assembling final PDF...
-magick !file_list! "%output_pdf%"
+echo [INFO] Processing images in: "%TARGET_DIR%"
 
-REM === Clean up temporary PDFs ===
-for %%f in (temp_*.pdf) do del "%%f"
+:: Run PowerShell script for natural sorting and direct assembly via ImageMagick
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+    "$ErrorActionPreference = 'Stop';" ^
+    "$dir = '%TARGET_DIR%';" ^
+    "$exts = @('.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.webp');" ^
+    "$files = Get-ChildItem -LiteralPath $dir -File | Where-Object { $exts -contains $_.Extension.ToLower() } | Sort-Object { [regex]::Replace($_.Name, '\d+', { $args[0].Value.PadLeft(20, '0') }) };" ^
+    "if ($files.Count -eq 0) { Write-Host '[ERROR] No supported images found.' -ForegroundColor Red; exit 2; }" ^
+    "Write-Host ('[INFO] Found {0} image(s). Assembling into PDF...' -f $files.Count);" ^
+    "$listFile = [System.IO.Path]::GetTempFileName();" ^
+    "try {" ^
+    "  $files | ForEach-Object { Add-Content -LiteralPath $listFile -Value ('`\"{0}`\"' -f $_.FullName) };" ^
+    "  $parentName = (Get-Item -LiteralPath $dir).Name;" ^
+    "  $outPdf = Join-Path $dir ('{0}.pdf' -f $parentName);" ^
+    "  Write-Host ('[INFO] Output PDF: {0}' -f $outPdf);" ^
+    "  $proc = Start-Process -FilePath 'magick' -ArgumentList ('@{0}' -f $listFile), ('`\"{0}`\"' -f $outPdf) -NoNewWindow -PassThru -Wait;" ^
+    "  if ($proc.ExitCode -ne 0) { throw ('ImageMagick exited with code {0}' -f $proc.ExitCode) }" ^
+    "  Write-Host ('[SUCCESS] PDF created successfully: {0} ({1} pages)' -f $outPdf, $files.Count) -ForegroundColor Green;" ^
+    "} finally {" ^
+    "  Remove-Item -LiteralPath $listFile -Force -ErrorAction SilentlyContinue;" ^
+    "}"
 
-echo.
-echo ✅ PDF generated successfully: %output_pdf% with !count! pages
+if errorlevel 1 (
+    echo.
+    echo [ERROR] PDF generation failed.
+)
+
 echo.
 pause

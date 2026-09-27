@@ -1,0 +1,32 @@
+name: Publish Package
+
+on:
+  release:
+    types: [ created ]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@wizyxgh'
+
+      - name: Run Tests
+        working-directory: ./convert-pdf-to-jpg/package
+        run: npm test
+
+      - name: Publish to GitHub Packages
+        working-directory: ./convert-pdf-to-jpg/package
+        run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

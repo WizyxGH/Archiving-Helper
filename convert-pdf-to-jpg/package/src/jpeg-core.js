@@ -24,7 +24,7 @@
 
   /** Reads the markers of a JPEG: what has to be understood, and what is merely carried over. */
   function parse(b) {
-    if (b[0] !== 0xff || b[1] !== M.SOI) throw new Error('Not a JPEG image')
+    if (b[0] !== 0xff || b[1] !== M.SOI) throw new Error('ce n’est pas un JPEG')
     const out = { segments: [], frame: null, scan: null, dri: 0, huff: new Map() }
     let p = 2
     while (p < b.length) {
@@ -39,9 +39,9 @@
       const body = p + 2, bodyEnd = p + len
       if (isSOF(m)) {
         if (m !== 0xc0 && m !== 0xc1) {
-          throw new Error(m === 0xc2 ? 'Progressive JPEG: lossless cropping is not supported' : 'Unsupported JPEG variant')
+          throw new Error(m === 0xc2 ? 'JPEG progressif : rognage sans perte impossible' : 'variante de JPEG non gérée')
         }
-        if (b[body] !== 8) throw new Error('Non-8-bit JPEG')
+        if (b[body] !== 8) throw new Error('JPEG non 8 bits')
         const comps = []
         const n = b[body + 5]
         for (let i = 0; i < n; i++) {
@@ -77,8 +77,8 @@
       }
       p = bodyEnd
     }
-    if (!out.frame || !out.scan) throw new Error('Incomplete JPEG')
-    if (out.frame.comps.length !== out.scan.comps.length) throw new Error('Multi-scan JPEG: lossless cropping is not supported')
+    if (!out.frame || !out.scan) throw new Error('JPEG incomplet')
+    if (out.frame.comps.length !== out.scan.comps.length) throw new Error('JPEG à plusieurs passes : rognage sans perte impossible')
     return out
   }
 
@@ -166,18 +166,19 @@
    */
   function optimalTable(freqIn) {
     const f = Int32Array.from(freqIn)
-    f[256] = 1 // reserved symbol
+    f[256] = 1 // le symbole réservé
     const size = new Int32Array(257)
     const chain = new Int32Array(257).fill(-1)
     for (;;) {
-      // The two smallest non-zero frequencies; on tie, highest index (matches libjpeg behavior).
+      // Les deux plus petites fréquences non nulles ; à égalité, le plus grand indice — c'est ce
+      // que fait libjpeg, et cela rend le résultat reproductible.
       let v1 = -1, v2 = -1
       for (let i = 0; i <= 256; i++) if (f[i] && (v1 < 0 || f[i] < f[v1] || (f[i] === f[v1] && i > v1))) v1 = i
       for (let i = 0; i <= 256; i++) if (f[i] && i !== v1 && (v2 < 0 || f[i] < f[v2] || (f[i] === f[v2] && i > v2))) v2 = i
       if (v2 < 0) break
       f[v1] += f[v2]; f[v2] = 0
-      // Each symbol of the merged branch gains a bit; chain connects to the TAIL
-      // of the first branch, not its head.
+      // Chaque symbole de la branche fusionnée gagne un bit ; la chaîne se raccroche à la QUEUE
+      // de la première branche, pas à sa tête — l'accrocher à la tête casse l'arbre.
       let k = v1
       size[k]++
       while (chain[k] >= 0) { k = chain[k]; size[k]++ }
@@ -188,7 +189,7 @@
     }
     const bits = new Int32Array(33)
     for (let i = 0; i <= 256; i++) if (size[i]) bits[size[i]]++
-    // No code can exceed 16 bits: rebalance tree without changing content.
+    // Aucun code ne peut dépasser 16 bits : on rééquilibre l'arbre sans changer son contenu.
     for (let i = 32; i > 16; i--) {
       while (bits[i] > 0) {
         let j = i - 2
@@ -201,16 +202,17 @@
     }
     let last = 16
     while (last > 0 && bits[last] === 0) last--
-    bits[last]-- // remove reserved symbol
+    bits[last]-- // on retire le symbole réservé
     const counts = new Uint8Array(16)
     for (let i = 1; i <= 16; i++) counts[i - 1] = bits[i]
-    // Symbols ordered by ORIGINAL length then by value: this order is covered by
-    // lengths reduced to 16 bits.
+    // Les symboles rangés par leur longueur D'ORIGINE puis par valeur : c'est cet ordre que les
+    // longueurs ramenées à 16 bits viennent recouvrir. S'arrêter à 16 ici perdait les symboles
+    // des branches profondes — et le fichier ne se décodait plus.
     const values = []
     for (let len = 1; len <= 32; len++) for (let i = 0; i < 256; i++) if (size[i] === len) values.push(i)
     let total = 0
     for (let i = 0; i < 16; i++) total += counts[i]
-    if (total > values.length) throw new Error('Inconsistent Huffman table')
+    if (total > values.length) throw new Error('table de Huffman incohérente')
     const enc = new Map()
     let code = 0, at = 0
     for (let len = 1; len <= 16; len++) {
@@ -249,7 +251,9 @@
       if (!blank({ x: x0, y: rect.y, w: rect.x - x0, h: rect.h })) x0 = Math.min(tight(rect.x, mw), w - mw)
       if (!blank({ x: rect.x, y: y0, w: rect.w, h: rect.y - y0 })) y0 = Math.min(tight(rect.y, mh), h - mh)
     }
-    // Origin MUST remain a multiple of the grid: MCU index is deduced by division.
+    // Le départ DOIT rester un multiple de la grille : l'index du MCU s'en déduit par division.
+    // Une image dont la largeur n'est pas un multiple (1620 pour une grille de 16) rendait ici un
+    // x non aligné, donc un index fractionnaire et des blocs lus de travers.
     const onGrid = (v, step, max) => Math.max(0, Math.min(Math.floor(v / step) * step, Math.floor((max - 1) / step) * step))
     x0 = onGrid(x0, mw, w); y0 = onGrid(y0, mh, h)
     // Kept exactly as asked: those two edges cost nothing to the format.
@@ -280,7 +284,7 @@
         for (let ci = 0; ci < frame.comps.length; ci++) {
           const comp = frame.comps[ci], sc = scan.comps[ci]
           const dcT = huff.get(sc.td), acT = huff.get(16 + sc.ta)
-          if (!dcT || !acT) throw new Error('Missing Huffman table')
+          if (!dcT || !acT) throw new Error('table de Huffman manquante')
           for (let by = 0; by < comp.v; by++) {
             for (let bx = 0; bx < comp.h; bx++) {
               // Coefficients are kept in the order they are coded: re-encoded the same way, they
@@ -337,7 +341,7 @@
       for (let my = 0; my < outY; my++) {
         for (let mx = 0; mx < outX; mx++) {
           const cell = kept[my * outX + mx]
-          if (!cell) throw new Error('Crop region is outside the image')
+          if (!cell) throw new Error('rognage hors de l’image')
           let bi = 0
           for (let ci = 0; ci < frame.comps.length; ci++) {
             const comp = frame.comps[ci], sc = scan.comps[ci]
@@ -361,77 +365,136 @@
         }
       }
     }
-
-    const freq = Array.from({ length: 32 }, () => new Int32Array(257))
-    walk((tableId, sym) => { freq[tableId][sym]++ })
-    const opt = new Map()
-    for (let ci = 0; ci < frame.comps.length; ci++) {
-      const sc = scan.comps[ci]
-      if (!opt.has(sc.td)) opt.set(sc.td, optimalTable(freq[sc.td]))
-      if (!opt.has(16 + sc.ta)) opt.set(16 + sc.ta, optimalTable(freq[16 + sc.ta]))
-    }
-
-    const encBits = new Out()
-    walk((tableId, sym, val, valBits) => {
-      const e = opt.get(tableId).enc.get(sym)
-      encBits.write(e.code, e.size)
-      if (valBits) encBits.write(val, valBits)
+    const freq = new Map()
+    walk((id, sym) => {
+      let f = freq.get(id)
+      if (!f) { f = new Int32Array(257); freq.set(id, f) }
+      f[sym]++
     })
-    encBits.flush()
+    const tables = new Map()
+    for (const [id, f] of freq) tables.set(id, optimalTable(f))
+    const out = new Out()
+    walk((id, sym, extra, len) => {
+      const c = tables.get(id).enc.get(sym)
+      out.write(c.code, c.size)
+      if (len) out.write(extra, len)
+    })
+    out.flush()
 
-    // ── Assembling the output JPEG ──
-    const head = [0xff, M.SOI]
-    // 1. APP / COM markers from the original, unless asked to drop them.
-    for (const s of parsed.segments) {
-      if (s.skip || s.marker === M.DHT) continue
-      const isMeta = (s.marker >= 0xe0 && s.marker <= 0xef) || s.marker === M.COM
-      if (isMeta && !keepMeta) continue
-      head.push(...b.subarray(s.start, s.end))
+    // ── The file: every segment carried over as it is, the frame given its new size, the scan
+    // replaced. The restart interval is dropped since the new stream has no restarts.
+    const parts = [new Uint8Array([0xff, M.SOI])]
+    for (const seg of parsed.segments) {
+      // Les tables de Huffman d'origine ne servent plus : celles du fichier de sortie sont
+      // calculées pour son propre contenu, et sont écrites juste avant le balayage.
+      if (seg.skip || seg.marker === M.SOI || seg.marker === M.DHT) continue
+      // EXIF, XMP, Photoshop, commentaires : rien à voir avec l'image, et tout à voir avec toi.
+      // « keepMeta » les laisse passer pour qui les veut — le choix est à l'envoi, pas ici.
+      if (!keepMeta && isPrivate(b, seg)) continue
+      parts.push(b.subarray(seg.start, seg.end))
     }
-    // 2. DQT quantization tables: as they were.
-    // 3. New DHT segment with our optimized Huffman tables.
-    let dhtLen = 2
-    for (const [id, t] of opt) dhtLen += 1 + 16 + t.values.length
-    const dht = [0xff, M.DHT, dhtLen >> 8, dhtLen & 255]
-    for (const [id, t] of opt) {
-      dht.push(id)
-      for (let i = 0; i < 16; i++) dht.push(t.counts[i])
-      for (let i = 0; i < t.values.length; i++) dht.push(t.values[i])
+    // La seule chose que l'EXIF portait et qui compte : l'orientation, qu'Inducks applique.
+    // (Inutile quand on garde tout : l'EXIF d'origine est déjà là, et l'écrire deux fois donnerait
+    // un fichier à deux blocs EXIF, que les décodeurs interprètent chacun à leur façon.)
+    if (!keepMeta) {
+      const turn = orientationOf(b, parsed)
+      if (turn > 1) parts.push(orientationSegment(turn))
+      else if (turn === -1) for (const seg of parsed.segments) { if (seg.marker === 0xe1) parts.push(b.subarray(seg.start, seg.end)) }
     }
-    head.push(...dht)
-    // 4. SOF frame header, with the cropped image's dimensions.
-    const sof = Array.from(b.subarray(frame.start, frame.end))
-    sof[5] = box.h >> 8; sof[6] = box.h & 255
-    sof[7] = box.w >> 8; sof[8] = box.w & 255
-    head.push(...sof)
-    // 5. SOS scan header: as it was.
-    head.push(...b.subarray(scan.start, scan.headerEnd))
-
-    const total = head.length + encBits.a.length + 2
-    const out = new Uint8Array(total)
-    out.set(head, 0)
-    out.set(encBits.a, head.length)
-    out[total - 2] = 0xff; out[total - 1] = M.EOI
-    return { bytes: out, rect: box }
+    for (const [id, t] of tables) {
+      const len = 2 + 1 + 16 + t.values.length
+      const dht = new Uint8Array(2 + len)
+      dht[0] = 0xff; dht[1] = M.DHT
+      dht[2] = (len >> 8) & 0xff; dht[3] = len & 0xff
+      dht[4] = id >= 16 ? 0x10 | (id - 16) : id // classe (DC/AC) et numéro de table
+      dht.set(t.counts, 5)
+      dht.set(t.values, 21)
+      parts.push(dht)
+    }
+    const sof = b.slice(frame.start, frame.end)
+    sof[5] = (box.h >> 8) & 0xff; sof[6] = box.h & 0xff
+    sof[7] = (box.w >> 8) & 0xff; sof[8] = box.w & 0xff
+    parts.push(sof)
+    parts.push(b.subarray(scan.start, scan.headerEnd))
+    parts.push(new Uint8Array(out.a))
+    parts.push(new Uint8Array([0xff, M.EOI]))
+    const size = parts.reduce((n, p) => n + p.length, 0)
+    const file = new Uint8Array(size)
+    let at = 0
+    for (const p of parts) { file.set(p, at); at += p.length }
+    return { bytes: file, box: { x: box.x, y: box.y, w: box.w, h: box.h } }
   }
 
-  /**
-   * The grid on which `bytes` can be cut without re-encoding: { w, h } in pixels.
-   * On a color JPEG it is almost always { w: 16, h: 16 } (4:2:0 subsampling).
-   */
+  /** The grid the cut snaps to, in pixels — what the confirmation screen needs to draw it. */
   function grid(bytes) {
-    const parsed = parse(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes))
-    const { comps } = parsed.frame
-    return { w: 8 * Math.max(...comps.map((c) => c.h)), h: 8 * Math.max(...comps.map((c) => c.v)) }
+    const frame = parse(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)).frame
+    return { w: 8 * Math.max(...frame.comps.map((c) => c.h)), h: 8 * Math.max(...frame.comps.map((c) => c.v)), imageW: frame.w, imageH: frame.h }
   }
 
   /**
-   * Optimizes `bytes` losslessly by recomputing its Huffman tables and stripping metadata.
-   * Returns null when the file cannot be made smaller.
+   * Which of the file's non-image segments follow it into the output.
    *
-   * Verifies before returning that EVERY single DCT coefficient of the output is identical to
-   * the original: an optimization error would be silent corruption, so this is asserted on
-   * every single call.
+   * A JPEG can carry far more than the picture: the camera or scanner's EXIF (device, serial
+   * number, dates, sometimes GPS), an XMP block, Photoshop's own leftovers, free comments. None
+   * of that changes a pixel, and all of it would end up in a public archive. Since the file is
+   * rewritten anyway, it costs nothing to leave it behind.
+   *
+   * What IS kept is what a decoder needs: JFIF (density), the ICC profile (colours), Adobe's
+   * APP14 (colour transform). And the one thing EXIF is needed for — the ORIENTATION, which
+   * Inducks' own `mogrify -auto-orient` acts on — is re-emitted alone, in a minimal block.
+   */
+  const XMP = 'http://ns.adobe.com/xap/1.0/'
+  function isPrivate(b, seg) {
+    const m = seg.marker
+    if (m === M.COM || m === 0xeb || m === 0xec || m === 0xed || m === 0xef) return true // commentaire, Ducky, Photoshop…
+    if (m === 0xe1) return true // EXIF ou XMP : remplacé par l'orientation seule
+    if (m >= 0xe3 && m <= 0xea) return true // APP3..APP10 : Meta, données propriétaires
+    return false
+  }
+  /** L'orientation EXIF du fichier, s'il en porte une autre que « normale ». */
+  function orientationOf(b, parsed) {
+    for (const seg of parsed.segments) {
+      if (seg.marker !== 0xe1) continue
+      const dv = new DataView(b.buffer, b.byteOffset, b.byteLength)
+      try {
+        // Sans lecteur d'EXIF disponible, on préfère GARDER le bloc plutôt que perdre en silence
+        // une orientation : c'est le seul cas où la confidentialité cède devant l'exactitude.
+        if (!ISU.exifOrientation) return -1
+        const o = ISU.exifOrientation(b, dv, seg.start + 4, seg.end)
+        if (o > 1) return o
+      } catch { /* EXIF illisible : rien à conserver */ }
+    }
+    return 1
+  }
+  /** Un APP1 minimal ne portant que l'orientation : 34 octets, aucune autre information. */
+  function orientationSegment(value) {
+    const a = new Uint8Array(36)
+    const dv = new DataView(a.buffer)
+    a[0] = 0xff; a[1] = 0xe1
+    dv.setUint16(2, 34)
+    a.set([0x45, 0x78, 0x69, 0x66, 0, 0], 4) // "Exif" + 2 zeros
+    a.set([0x4d, 0x4d], 10)                  // gros-boutiste
+    dv.setUint16(12, 42); dv.setUint32(14, 8)
+    dv.setUint16(18, 1)                      // une seule entrée
+    dv.setUint16(20, 0x0112); dv.setUint16(22, 3); dv.setUint32(24, 1); dv.setUint16(28, value)
+    dv.setUint32(32, 0)                      // pas d'IFD suivant
+    return a
+  }
+
+  /**
+   * The same image, encoded with Huffman tables built for IT — nothing else changes.
+   *
+   * Many scans, and most comic archives, carry the standard tables printed in the JPEG norm:
+   * they describe an average image, not this one. Recomputing them costs a sixth of the file on
+   * a CBR page and a couple of percent on an already well-encoded scan, for exactly the same
+   * pixels: the DCT coefficients are copied, only their codes change.
+   *
+   * The result is VERIFIED before being handed back — decoded again and compared coefficient by
+   * coefficient with the original. An encoder bug would be silent otherwise, and these bytes go
+   * into a public archive. That doubles the cost (about a third of a second per page either way)
+   * and buys certainty per file rather than confidence in general.
+   *
+   * Returns null when there is nothing to gain, so the caller keeps the file it already has.
    */
   function optimise(bytes, { keepMeta = false } = {}) {
     const b = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)
@@ -443,13 +506,13 @@
     if (out.bytes.length >= b.length) return null
     const before = readBlocks(b, parsed, 0, 0, outX, outY)
     const after = readBlocks(out.bytes, parse(out.bytes), 0, 0, outX, outY)
-    if (before.length !== after.length) throw new Error('Optimization error: block count mismatch')
+    if (before.length !== after.length) throw new Error('optimisation : nombre de blocs différent')
     for (let i = 0; i < before.length; i++) {
       const p = before[i], q = after[i]
-      if (!p || !q || p.length !== q.length) throw new Error('Optimization error: missing blocks')
+      if (!p || !q || p.length !== q.length) throw new Error('optimisation : blocs manquants')
       for (let n = 0; n < p.length; n++) {
         const u = p[n], v = q[n]
-        for (let k = 0; k < 64; k++) if (u[k] !== v[k]) throw new Error('Optimization error: modified coefficient')
+        for (let k = 0; k < 64; k++) if (u[k] !== v[k]) throw new Error('optimisation : coefficient modifié')
       }
     }
     return out.bytes
