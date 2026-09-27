@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { open, mkdir, stat, readFile, readdir, rm, rename } from 'node:fs/promises'
+import { open, mkdir, stat, readFile, readdir, rm, rename, copyFile, writeFile } from 'node:fs/promises'
 import { createWriteStream, existsSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -70,6 +70,54 @@ function openInBrowser(url) {
   try {
     spawn('cmd', ['/c', 'start', '', url], { detached: true, stdio: 'ignore' }).unref()
   } catch {}
+}
+
+// ─── JDownloader 2 Integration ──────────────────────────────────────────────
+
+function findJDownloader() {
+  const candidates = [
+    path.join(process.env.LOCALAPPDATA || '', 'JDownloader 2', 'JDownloader2.exe'),
+    path.join(process.env.LOCALAPPDATA || '', 'JDownloader 2.0', 'JDownloader2.exe'),
+    path.join(process.env.ProgramFiles || '', 'JDownloader 2.0', 'JDownloader2.exe'),
+    'C:\\Program Files\\JDownloader 2.0\\JDownloader2.exe',
+  ]
+  for (const c of candidates) {
+    if (existsSync(c)) return c
+  }
+  return null
+}
+
+async function sendToJDownloader(filePathOrUrls, outputDir = null) {
+  const jdExe = findJDownloader()
+  if (!jdExe) {
+    throw new Error('JDownloader 2 executable not found on system.')
+  }
+
+  const jdDir = path.dirname(jdExe)
+  const folderwatchDir = path.join(jdDir, 'folderwatch')
+  await mkdir(folderwatchDir, { recursive: true })
+
+  if (typeof filePathOrUrls === 'string' && existsSync(filePathOrUrls) && filePathOrUrls.endsWith('.dlc')) {
+    const destDlc = path.join(folderwatchDir, path.basename(filePathOrUrls))
+    await copyFile(filePathOrUrls, destDlc)
+    console.log(`\n[JDOWNLOADER] File queued into JDownloader 2: ${path.basename(destDlc)}`)
+    console.log(`Starting JDownloader 2 in background...`)
+    spawn(jdExe, [destDlc], { detached: true, stdio: 'ignore' }).unref()
+    return
+  }
+
+  const urls = Array.isArray(filePathOrUrls) ? filePathOrUrls : [filePathOrUrls]
+  const crawljobFile = path.join(folderwatchDir, `batch_${Date.now()}.crawljob`)
+  const lines = [
+    `text = ${urls.join('\\n')}`,
+    `autoStart = TRUE`,
+    `autoConfirm = TRUE`,
+  ]
+  if (outputDir) lines.push(`downloadFolder = ${outputDir}`)
+  await writeFile(crawljobFile, lines.join('\n'), 'utf8')
+
+  console.log(`\n[JDOWNLOADER] Queued ${urls.length} link(s) to JDownloader 2!`)
+  spawn(jdExe, [], { detached: true, stdio: 'ignore' }).unref()
 }
 
 // ─── Aria2c Locator & Auto-Bootstrapper ──────────────────────────────────────
@@ -368,11 +416,6 @@ async function resolveDirectDownloadLink(rawUrl, options = {}) {
     } catch {}
   }
 
-  // 8. Rapidgator / DDownload notice if not unrestrictable
-  if (/rapidgator\.net|rg\.to|ddownload\.com|turbobit\.net|katfile\.com|nitroflare\.com/i.test(url)) {
-    console.warn(`\n[NOTICE] Rapidgator link detected. Add your Real-Debrid / AllDebrid token to download-files/.env for 100MB/s direct download.`)
-  }
-
   return { downloadUrl: url, filename: null, host: 'Direct' }
 }
 
@@ -595,6 +638,22 @@ async function runPostProcessing(outputDir, options = {}) {
 // ─── Batch Downloader Engine ─────────────────────────────────────────────────
 
 async function downloadUrlsList(urls, outputDir, options = {}) {
+  if (options.useJDownloader) {
+    await sendToJDownloader(urls, outputDir)
+    return
+  }
+
+  // Check if any links are Rapidgator / Nitroflare without active debrider
+  const hasRestrictedHost = urls.some(u => /rapidgator\.net|rg\.to|nitroflare\.com|ddownload\.com/i.test(u))
+  const hasDebrider = Boolean(options.debriderKey || process.env.REALDEBRID_API_KEY || options.allDebridKey || process.env.ALLDEBRID_API_KEY || options.debridLinkKey || process.env.DEBRIDLINK_API_KEY)
+
+  if (hasRestrictedHost && !hasDebrider) {
+    console.log('\n[NOTICE] Rapidgator / Nitroflare links detected without active debrider.')
+    console.log('-> Automatically sending all links to JDownloader 2 for background free download management...\n')
+    await sendToJDownloader(urls, outputDir)
+    return
+  }
+
   await mkdir(outputDir, { recursive: true })
 
   console.log(`\n========================================`)
@@ -729,6 +788,11 @@ async function processInputFile(filePath, options = {}) {
     ? path.resolve(options.outputDir)
     : path.join(parentDir, `${baseName}_downloads`)
 
+  if (options.useJDownloader && fileExt === '.dlc') {
+    await sendToJDownloader(filePath, outputDir)
+    return
+  }
+
   const rawContent = await readFile(filePath, 'utf8')
   let urls = []
 
@@ -833,6 +897,9 @@ function usage() {
     '  --clean-archives      Delete archives after extraction\n' +
     '  --auto-convert        Auto-convert extracted PDFs to lossless CBZ/JPG\n' +
     '\n' +
+    'JDownloader Integration:\n' +
+    '  --jd, --jdownloader   Queue files directly to JDownloader 2 in background\n' +
+    '\n' +
     'Debrider & Host Tokens:\n' +
     '  --debrider <token>    Real-Debrid API token for 100MB/s Rapidgator/DDownload\n' +
     '  --alldebrid <token>   AllDebrid API key\n' +
@@ -860,6 +927,7 @@ function parseArgs(args) {
   let cleanArchives = false
   let autoConvert = false
   let noAria2 = false
+  let useJDownloader = false
   let connections = 16
   let concurrent = 4
 
@@ -875,6 +943,8 @@ function parseArgs(args) {
       debriderKey = args[++i]
     } else if (args[i] === '--alldebrid') {
       allDebridKey = args[++i]
+    } else if (args[i] === '--jd' || args[i] === '--jdownloader') {
+      useJDownloader = true
     } else if (args[i] === '--server' || args[i] === '--cnl') {
       serverMode = true
     } else if (args[i] === '--watch') {
@@ -914,6 +984,7 @@ function parseArgs(args) {
     cleanArchives,
     autoConvert,
     noAria2,
+    useJDownloader,
     connections,
     concurrent,
   }
