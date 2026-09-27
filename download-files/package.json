@@ -1,0 +1,15 @@
+{
+  "name": "download-files",
+  "version": "1.0.0",
+  "description": "Lightweight, ultra-fast download manager and post-processing pipeline designed to replace heavy Java downloaders like JDownloader 2 for comic archives, PDFs, and direct hosters.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "puppeteer-core": "^25.12.0"
+  }
+}

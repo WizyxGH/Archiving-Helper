@@ -1,4 +1,6 @@
 node_modules/
 .env
+*.tmp
+*.crdownload
 files_downloads/
 test_rg.mjs
