@@ -16,10 +16,7 @@ if not defined EXTRACTOR (
     if exist "C:\Program Files\7-Zip\7z.exe" (
         set "EXTRACTOR=C:\Program Files\7-Zip\7z.exe"
         set "EXTRACTOR_TYPE=7z"
-    )
-)
-if not defined EXTRACTOR (
-    if exist "C:\Program Files (x86)\7-Zip\7z.exe" (
+    ) else if exist "C:\Program Files (x86)\7-Zip\7z.exe" (
         set "EXTRACTOR=C:\Program Files (x86)\7-Zip\7z.exe"
         set "EXTRACTOR_TYPE=7z"
     )
@@ -37,10 +34,7 @@ if not defined EXTRACTOR (
     if exist "C:\Program Files\WinRAR\WinRAR.exe" (
         set "EXTRACTOR=C:\Program Files\WinRAR\WinRAR.exe"
         set "EXTRACTOR_TYPE=winrar"
-    )
-)
-if not defined EXTRACTOR (
-    if exist "C:\Program Files (x86)\WinRAR\WinRAR.exe" (
+    ) else if exist "C:\Program Files (x86)\WinRAR\WinRAR.exe" (
         set "EXTRACTOR=C:\Program Files (x86)\WinRAR\WinRAR.exe"
         set "EXTRACTOR_TYPE=winrar"
     )
@@ -60,18 +54,19 @@ if not defined EXTRACTOR (
     exit /b 1
 )
 
-echo [INFO] Using extractor: %EXTRACTOR% [%EXTRACTOR_TYPE%]
+echo [INFO] Using extractor: %EXTRACTOR% (%EXTRACTOR_TYPE%)
 echo.
 
 :: === Target resolution ===
 set "EXTENSIONS=.cbr .cbz .zip .rar .7z"
 
 if "%~1"=="" (
-    echo Enter the folder path containing archives [or press Enter for current directory]:
+    echo Enter the folder path containing archives (or press Enter for current directory):
     set /p "TARGET_DIR="
     if not defined TARGET_DIR set "TARGET_DIR=%CD%"
     call :process_directory "!TARGET_DIR!"
 ) else (
+    :: Arguments provided (drag and drop files or folders)
     for %%A in (%*) do (
         if exist "%%~fA\*" (
             call :process_directory "%%~fA"
@@ -188,5 +183,5 @@ exit /b
 set "TARGET=%~1"
 set /a finalcount=0
 for /f %%C in ('dir /a-d /b /s "%TARGET%" 2^>nul ^| find /c /v ""') do set "finalcount=%%C"
-echo [SUCCESS] %finalcount% file[s] extracted into "%TARGET%"
+echo [SUCCESS] %finalcount% file(s) extracted into "%TARGET%"
 exit /b

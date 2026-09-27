@@ -24,6 +24,7 @@ if "%~1"=="" (
         pause
         exit /b 2
     )
+    set "TARGET_INPUT=!TARGET_INPUT:"=!"
     node "%~dp0pdf-to-jpg.mjs" "!TARGET_INPUT!"
 ) else (
     node "%~dp0pdf-to-jpg.mjs" %*
