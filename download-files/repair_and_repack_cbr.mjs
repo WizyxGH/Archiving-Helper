@@ -44,18 +44,56 @@ function cleanJpegLossless(buf) {
 }
 
 /**
- * Heuristic rules to infer a clean standardized comic name (e.g. de_LTBUP_48, fr_DDD_1)
- * from messy/anonymized filenames, internal ComicInfo.xml, or internal image names.
+ * Official INDUCKS Publication Codes (Strictly Verified, No Invented Acronyms)
+ * Reference: https://inducks.org/
+ */
+const VERIFIED_INDUCK_CODES = [
+  // France (fr)
+  { regex: /dynastie[\s._-]*donald|carl[\s._-]*barks[\s._-]*integral|fr_ddd/i, code: 'fr_DDD' },         // La Dynastie Donald Duck
+  { regex: /journal[\s._-]*de[\s._-]*mickey[\s._-]*collector|jmc/i, code: 'fr_JMC' },                    // Le Journal de Mickey Collector
+  { regex: /journal[\s._-]*de[\s._-]*mickey|jdm/i, code: 'fr_JM' },                                      // Le Journal de Mickey
+  { regex: /grande[\s._-]*epopee[\s._-]*de[\s._-]*picsou|don[\s._-]*rosa[\s._-]*integral|fr_irs/i, code: 'fr_IRS' }, // Intégrale Don Rosa
+  { regex: /chroniques[\s._-]*de[\s._-]*fantomiald|fr_cf/i, code: 'fr_CF' },                              // Les Chroniques de Fantomiald
+  { regex: /powerduck|pkna|power[\s._-]*duck/i, code: 'fr_PKNA' },                                       // Powerduck (PKNA / Paperinik New Adventures)
+  { regex: /mickey[\s._-]*parade[\s._-]*geant|fr_mpg/i, code: 'fr_MPG' },                                // Mickey Parade Géant
+  { regex: /super[\s._-]*picsou[\s._-]*geant|fr_spg/i, code: 'fr_SPG' },                                // Super Picsou Géant
+  { regex: /picsou[\s._-]*magazine|fr_pm/i, code: 'fr_PM' },                                             // Picsou Magazine
+  { regex: /fantomiald[\s._-]*hors[\s._-]*serie|fr_fhs/i, code: 'fr_FHS' },                              // Fantomiald Hors-Série
+  { regex: /les[\s._-]*tresors[\s._-]*de[\s._-]*picsou|fr_tp/i, code: 'fr_TP' },                         // Les Trésors de Picsou
+
+  // Germany (de)
+  { regex: /ultimate[\s._-]*phantomias|ltb[\s._-]*ultimate|de_ltbup/i, code: 'de_LTBUP' },               // LTB Ultimate Phantomias
+  { regex: /lustiges[\s._-]*taschenbuch|ltb/i, code: 'de_LTB' },                                         // Lustiges Taschenbuch
+  { regex: /micky[\s._-]*maus/i, code: 'de_MM' },                                                        // Micky Maus
+
+  // Brazil (br - Official Inducks country code for Brazil)
+  { regex: /pato[\s._-]*donald/i, code: 'br_PD' },                                                       // Pato Donald (Editora Abril)
+  { regex: /tio[\s._-]*patinhas/i, code: 'br_TP' },                                                      // Tio Patinhas
+  { regex: /ze[\s._-]*carioca/i, code: 'br_ZC' },                                                        // Zé Carioca
+
+  // United States (us)
+  { regex: /uncle[\s._-]*scrooge[\s._-]*carl[\s._-]*barks|us_usca/i, code: 'us_USCA' },                 // Uncle Scrooge (Carl Barks)
+  { regex: /uncle[\s._-]*scrooge/i, code: 'us_US' },                                                     // Uncle Scrooge
+  { regex: /walt[\s._-]*disney[\s._-]*comics[\s._-]*and[\s._-]*stories|wdcs/i, code: 'us_WDC' },        // WDC&S
+
+  // Italy (it)
+  { regex: /topolino/i, code: 'it_TL' },                                                                 // Topolino
+  { regex: /paperino/i, code: 'it_PA' }                                                                  // Paperino
+];
+
+/**
+ * Standardizes filename using ONLY verified Inducks codes.
+ * If not matching a verified Inducks code, cleans the original title without inventing fake codes.
  */
 export function inferStandardizedName(filename, internalFiles = [], comicInfoXml = null) {
   const combinedText = `${filename} ${internalFiles.slice(0, 5).join(' ')} ${comicInfoXml || ''}`.toLowerCase();
   
-  // Extract number (volume/issue number)
+  // Extract issue/volume number
   let num = null;
   const numMatches = [
     filename.match(/(?:tome|vol|issue|no|nr|#|part|_)[\s._-]*(\d+)/i),
-    filename.match(/(?:phantomias|donald|mickey|picsou|duck|irs|ddd|jmc|ltbup|ltb)[\s._-]*(\d+)/i),
-    combinedText.match(/(?:u|ddd|jmc|irs|ltb)[\s._-]*(\d+)/i),
+    filename.match(/(?:phantomias|donald|mickey|picsou|duck|irs|ddd|jmc|ltbup|ltb|powerduck)[\s._-]*(\d+)/i),
+    combinedText.match(/(?:u|ddd|jmc|irs|ltb|pkna|cf)[\s._-]*(\d+)/i),
     filename.match(/(\d+)/)
   ];
   for (const m of numMatches) {
@@ -65,62 +103,20 @@ export function inferStandardizedName(filename, internalFiles = [], comicInfoXml
     }
   }
 
-  // 1. Lustiges Taschenbuch Ultimate Phantomias (de_LTBUP)
-  if (/ultimate[\s._-]*phantomias|ltb[\s._-]*ultimate|phantomias|chronik[\s._-]*eines[\s._-]*superhelden|u\d+_\d+/i.test(combinedText)) {
-    return num ? `de_LTBUP_${num}` : `de_LTBUP_1`;
+  // 1. Check against strictly verified Inducks catalog codes
+  for (const entry of VERIFIED_INDUCK_CODES) {
+    if (entry.regex.test(combinedText)) {
+      return num ? `${entry.code}_${num}` : `${entry.code}_1`;
+    }
   }
 
-  // 2. Dynastie Donald Duck (fr_DDD)
-  if (/dynastie[\s._-]*donald|carl[\s._-]*barks[\s._-]*integral|fr_ddd|ddd[\s._-]*\d+/i.test(combinedText)) {
-    return num ? `fr_DDD_${num}` : `fr_DDD_1`;
-  }
-
-  // 3. Journal de Mickey Collector / Classique (fr_JMC)
-  if (/journal[\s._-]*de[\s._-]*mickey|jmc[\s._-]*\d+|fr_jmc/i.test(combinedText)) {
-    return num ? `fr_JMC_${num}` : `fr_JMC_1`;
-  }
-
-  // 4. Intégrale Don Rosa / Grande Épopée de Picsou (fr_IRS)
-  if (/don[\s._-]*rosa|grande[\s._-]*epopee[\s._-]*de[\s._-]*picsou|fr_irs|irs[\s._-]*\d+/i.test(combinedText)) {
-    return num ? `fr_IRS_${num}` : `fr_IRS_1`;
-  }
-
-  // 5. Fantomiald / Powerduck (fr_POWERDUCK / fr_FAN)
-  if (/powerduck|fantomiald/i.test(combinedText)) {
-    return num ? `fr_POWERDUCK_${num}` : `fr_POWERDUCK_1`;
-  }
-
-  // 6. Uncle Scrooge / Carl Barks US (us_USCA)
-  if (/uncle[\s._-]*scrooge|carl[\s._-]*barks[\s._-]*library|us_usca/i.test(combinedText)) {
-    return num ? `us_USCA_${num}` : `us_USCA_1`;
-  }
-
-  // 7. Pato Donald (pt_PD / es_PD)
-  if (/pato[\s._-]*donald|pt_pd/i.test(combinedText)) {
-    return num ? `pt_PD_${num}` : `pt_PD_1`;
-  }
-
-  // 8. Mickey Parade Géant (fr_MPG)
-  if (/mickey[\s._-]*parade|mpg/i.test(combinedText)) {
-    return num ? `fr_MPG_${num}` : `fr_MPG_1`;
-  }
-
-  // 9. Super Picsou Géant (fr_SPG)
-  if (/super[\s._-]*picsou|spg/i.test(combinedText)) {
-    return num ? `fr_SPG_${num}` : `fr_SPG_1`;
-  }
-
-  // 10. Picsou Magazine (fr_PM)
-  if (/picsou[\s._-]*magazine|fr_pm/i.test(combinedText)) {
-    return num ? `fr_PM_${num}` : `fr_PM_1`;
-  }
-
-  // Fallback: clean the original basename
+  // 2. If no official Inducks code matches, do NOT invent one: clean the real title cleanly
   let cleaned = path.parse(filename).name;
-  cleaned = cleaned.replace(/--\s*[a-f0-9]{32,}\s*--.*/i, ''); // remove hashes
+  cleaned = cleaned.replace(/--\s*[a-f0-9]{32,}\s*--.*/i, ''); // strip hashes
   cleaned = cleaned.replace(/[a-f0-9]{32,}/i, '');
   cleaned = cleaned.replace(/_?\s*anna’s archive.*/i, '');
   cleaned = cleaned.replace(/\s+/g, '_').replace(/_+/g, '_').replace(/^_+|_+$/g, '');
+  
   return cleaned || `comic_${num || 1}`;
 }
 
@@ -220,14 +216,14 @@ export async function repairAndRepackToCbr(inputPath, outputDir = 'C:\\Users\\st
       throw new Error(`Aucune image récupérable trouvée dans ${inputPath}`);
     }
 
-    // Determine clean standardized name (De-anonymization)
+    // Determine clean standardized name (Verified Inducks code or clean title)
     const internalFilenames = rawImageEntries.map(e => e.originalName);
     const standardBaseName = inferStandardizedName(rawBaseName, internalFilenames, detectedComicInfo);
     const finalCbrPath = path.join(outputDir, `${standardBaseName}.cbr`);
 
     console.log(`\n========================================================`);
-    console.log(`  [SOURCE ANONYMISÉE] : ${path.basename(inputPath)}`);
-    console.log(`  [NOM STANDARDISÉ]   : ${standardBaseName}.cbr`);
+    console.log(`  [SOURCE]            : ${path.basename(inputPath)}`);
+    console.log(`  [CODE INDUCKS OFF.] : ${standardBaseName}.cbr`);
     console.log(`  [PAGES EXTRAITES]   : ${rawImageEntries.length}`);
     console.log(`========================================================`);
 
@@ -251,29 +247,7 @@ export async function repairAndRepackToCbr(inputPath, outputDir = 'C:\\Users\\st
   }
 }
 
-// Test on real anonymized / messy files
-async function runAutoDeAnonymize() {
-  const testFiles = [
-    'C:\\Users\\starl\\Downloads\\Telegram Desktop\\Fantomiald_Les_Chroniques_De_HS_powerduck_01_les_aventures_galactiques.cbr',
-    'C:\\Users\\starl\\Downloads\\Pato Donald -#10-Ed_ Primavera- x Ricopa_crg_cbr -- 32682872cce1e512a2dd7032eaa0ce58 -- Anna’s Archive.cbr',
-    'C:\\Users\\starl\\Downloads\\us_USCA_2.cbz'
-  ];
-
-  console.log('========================================================');
-  console.log('  Désanonymisation & Standardisation Automatique');
-  console.log('========================================================\n');
-
-  for (const f of testFiles) {
-    if (fs.existsSync(f)) {
-      try {
-        await repairAndRepackToCbr(f);
-      } catch (err) {
-        console.error(`[!] Erreur sur ${f}:`, err.message);
-      }
-    }
-  }
-}
-
+// CLI execution
 if (process.argv[1] && process.argv[1].endsWith('repair_and_repack_cbr.mjs')) {
   const arg = process.argv[2];
   if (arg && fs.existsSync(arg)) {
@@ -283,7 +257,5 @@ if (process.argv[1] && process.argv[1].endsWith('repair_and_repack_cbr.mjs')) {
         console.error('\n[!] Erreur:', err.message);
         process.exit(1);
       });
-  } else {
-    runAutoDeAnonymize();
   }
 }
