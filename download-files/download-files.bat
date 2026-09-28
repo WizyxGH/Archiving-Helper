@@ -25,16 +25,20 @@ echo.
 echo   [1] Télécharger un tome Comic Viewer (ComicMafia HD -^> CBR)
 echo   [2] Télécharger les liens depuis files.txt (Multi-connexions)
 echo   [3] Réparer / Désanonymiser une archive ou dossier (Vers CBR)
-echo   [4] Mode surveillance de dossier (Watch Folder)
+echo   [4] Télécharger / Crawler des BDs Blogspot / Blogger (HD -^> CBR)
+echo   [5] Scanner de taille d'un canal Telegram (0 octet telecharge)
+echo   [6] Mode surveillance de dossier (Watch Folder)
 echo   [0] Retour / Quitter
 echo.
 echo ======================================================================
-set /p "CHOICE=Choisissez une option [0-4]: "
+set /p "CHOICE=Choisissez une option [0-6]: "
 
 if "%CHOICE%"=="1" goto web_comic
 if "%CHOICE%"=="2" goto download_txt
 if "%CHOICE%"=="3" goto repair_cbr
-if "%CHOICE%"=="4" goto watch_folder
+if "%CHOICE%"=="4" goto blogspot_comic
+if "%CHOICE%"=="5" goto scan_telegram
+if "%CHOICE%"=="6" goto watch_folder
 if "%CHOICE%"=="0" goto exit_app
 goto menu
 
@@ -78,13 +82,35 @@ echo.
 set /p "TARGET_PATH=Chemin du fichier ou dossier : "
 if "%TARGET_PATH%"=="" goto menu
 
-REM Remove quotes if present
 set "TARGET_PATH=%TARGET_PATH:"=%"
 
 echo.
 node "%~dp0repair_and_repack_cbr.mjs" "%TARGET_PATH%"
 echo.
 pause
+goto menu
+
+:blogspot_comic
+cls
+echo ======================================================================
+echo   TÉLÉCHARGEMENT & SCRAPING BLOGSPOT / BLOGGER (HD -^> CBR)
+echo ======================================================================
+echo.
+echo Collez l'URL de l'article ou du blog Blogspot :
+echo Exemple : https://thearabicmagazinmickeymouse.blogspot.com
+echo.
+set /p "BLOG_URL=URL : "
+if "%BLOG_URL%"=="" goto menu
+
+echo.
+node "%~dp0download_blogspot.mjs" "%BLOG_URL%"
+echo.
+pause
+goto menu
+
+:scan_telegram
+cls
+call "%~dp0scan_telegram.cmd"
 goto menu
 
 :watch_folder
