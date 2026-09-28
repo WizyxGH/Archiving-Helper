@@ -1,7 +1,7 @@
 @echo off
 chcp 65001 >nul
 setlocal enabledelayedexpansion
-title Archiving Helper - Download & Web Comic Pipeline
+title Archiving Helper - Download & Comic Pipeline
 
 where node >nul 2>nul
 if errorlevel 1 (
@@ -22,17 +22,19 @@ echo ======================================================================
 echo          📦 ARCHIVING HELPER - DOWNLOADER & COMIC PIPELINE
 echo ======================================================================
 echo.
-echo   [1] Télécharger un tome Comic Viewer (ComicMafia HD -> CBR)
-echo   [2] Télécharger les liens depuis files.txt (Multi-connexions aria2c)
-echo   [3] Mode surveillance de dossier (Watch Folder)
-echo   [0] Retour au menu principal / Quitter
+echo   [1] Télécharger un tome Comic Viewer (ComicMafia HD -^> CBR)
+echo   [2] Télécharger les liens depuis files.txt (Multi-connexions)
+echo   [3] Réparer / Désanonymiser une archive ou dossier (Vers CBR)
+echo   [4] Mode surveillance de dossier (Watch Folder)
+echo   [0] Retour / Quitter
 echo.
 echo ======================================================================
-set /p "CHOICE=Choisissez une option [0-3]: "
+set /p "CHOICE=Choisissez une option [0-4]: "
 
 if "%CHOICE%"=="1" goto web_comic
 if "%CHOICE%"=="2" goto download_txt
-if "%CHOICE%"=="3" goto watch_folder
+if "%CHOICE%"=="3" goto repair_cbr
+if "%CHOICE%"=="4" goto watch_folder
 if "%CHOICE%"=="0" goto exit_app
 goto menu
 
@@ -43,9 +45,7 @@ echo   TÉLÉCHARGEMENT COMIC VIEWER (HD LOSSLESS -^> CBR)
 echo ======================================================================
 echo.
 echo Collez le lien Comic Viewer ou le bookUri :
-echo Exemples :
-echo   - https://comicmafia.to/reader/comic-viewer.html?bookUri=Alben/UltimatePhantomias48.cbr
-echo   - Alben/UltimatePhantomias48.cbr
+echo Exemple : Alben/UltimatePhantomias48.cbr
 echo.
 set /p "BOOK_URI=Lien ou URI : "
 if "%BOOK_URI%"=="" goto menu
@@ -63,6 +63,26 @@ echo   TÉLÉCHARGEMENT DEPUIS files.txt
 echo ======================================================================
 echo.
 node "%~dp0download.mjs" "%~dp0files.txt" --auto-extract
+echo.
+pause
+goto menu
+
+:repair_cbr
+cls
+echo ======================================================================
+echo   RÉPARATION ET DÉSANONYMISATION CBR
+echo ======================================================================
+echo.
+echo Glissez-déposez le fichier ou dossier à réparer ci-dessous :
+echo.
+set /p "TARGET_PATH=Chemin du fichier ou dossier : "
+if "%TARGET_PATH%"=="" goto menu
+
+REM Remove quotes if present
+set "TARGET_PATH=%TARGET_PATH:"=%"
+
+echo.
+node "%~dp0repair_and_repack_cbr.mjs" "%TARGET_PATH%"
 echo.
 pause
 goto menu
