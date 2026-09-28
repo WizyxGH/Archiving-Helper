@@ -173,11 +173,51 @@ class TelegramArchivePipeline:
         self.client = TelegramClient(session_path, int(api_id), api_hash)
         await self.client.connect()
         if not await self.client.is_user_authorized():
-            raise RuntimeError("Session Telegram non autorisée. Lancez d'abord scan_telegram.bat pour vous connecter.")
+            print("\n Authentification Telegram requise :", flush=True)
+            phone = input("Entrez votre numero de telephone (ex: +33612345678) : ").strip()
+            await self.client.send_code_request(phone)
+            code = input("Entrez le code a 5 chiffres recu sur Telegram : ").strip()
+            try:
+                await self.client.sign_in(phone, code)
+            except Exception as e:
+                if "SessionPasswordNeededError" in type(e).__name__:
+                    pwd = input("Mot de passe 2FA requis : ").strip()
+                    await self.client.sign_in(password=pwd)
+                else:
+                    raise e
 
     async def run(self, channel_identifier):
         await self.init_client()
-        entity = await self.client.get_entity(channel_identifier)
+        
+        entity = None
+        # Handle invite links (https://t.me/+... or +hash)
+        if "t.me/+" in str(channel_identifier) or "joinchat" in str(channel_identifier) or str(channel_identifier).startswith("+"):
+            from telethon.tl.functions.messages import CheckChatInviteRequest, ImportChatInviteRequest
+            from telethon.errors import UserAlreadyParticipantError
+            hash_str = str(channel_identifier).split("+")[-1].split("/")[-1].strip()
+            
+            try:
+                check = await self.client(CheckChatInviteRequest(hash_str))
+                entity = getattr(check, 'chat', None)
+            except Exception:
+                pass
+
+            if not entity:
+                try:
+                    imported = await self.client(ImportChatInviteRequest(hash_str))
+                    entity = getattr(imported, 'chats', [None])[0]
+                except UserAlreadyParticipantError:
+                    # Look up from dialogs
+                    async for d in self.client.iter_dialogs():
+                        if d.is_channel or d.is_group:
+                            entity = d.entity
+                            break
+                except Exception:
+                    pass
+
+        if not entity:
+            entity = await self.client.get_entity(channel_identifier)
+
         title = getattr(entity, 'title', str(channel_identifier))
         print("=" * 70, flush=True)
         print(f" PIPELINE TELEGRAM -> DRIVE D:\\ (Mode: {'SIMULATION / AUDIT' if self.dry_run else 'EXÉCUTION RÉELLE'})", flush=True)
@@ -303,7 +343,9 @@ if __name__ == "__main__":
     channel = sys.argv[1] if len(sys.argv) > 1 and not sys.argv[1].startswith("--") else None
     
     if not channel:
-        channel = input("Lien ou nom du canal Telegram à traiter : ").strip()
+        default_ch = "https://t.me/+P_SAiScP0jBhODc8"
+        user_input = input(f"Lien ou nom du canal Telegram [Entrée pour {default_ch}] : ").strip()
+        channel = user_input if user_input else default_ch
 
     pipeline = TelegramArchivePipeline(dry_run=dry_mode)
     asyncio.run(pipeline.run(channel))
