@@ -90,7 +90,7 @@ class PipelineConfig:
     channel_url: Optional[str] = None
     dry_run: bool = True
     limit: Optional[int] = None
-    session_name: str = "telegram_archiver.session"
+    session_name: str = "telegram_scanner.session"
 
     @classmethod
     def from_env(cls, env_path: Optional[Path] = None, **overrides) -> "PipelineConfig":
