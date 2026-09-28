@@ -1,0 +1,36 @@
+# Environment & Credentials
+.env
+*.env
+.env.local
+.env.*.local
+
+# Telegram Sessions
+*.session
+*.session-journal
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Temporary Staging & Local Exports
+_staging_temp/
+*.csv
+temp/
+tmp/
+
+# OS Files
+.DS_Store
+Thumbs.db
+Desktop.ini
