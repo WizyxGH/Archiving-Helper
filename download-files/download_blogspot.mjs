@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import readline from 'readline';
 import { fileURLToPath } from 'url';
-import { downloadBlogspotPost, crawlBlogspotBlog } from './src/blogspot.mjs';
+import { extractScansFromPost, crawlBlogspotScans } from './src/blogspot.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -26,7 +26,7 @@ export async function main() {
 
   if (!targetUrl) {
     console.log('======================================================');
-    console.log('  BLOGSPOT / BLOGGER COMIC DOWNLOADER & SCRAPER');
+    console.log('  RÉCUPÉRATEUR DE SCANS DE BDS DEPUIS BLOGSPOT');
     console.log('======================================================');
     targetUrl = await prompt('\nEntrez l\'URL de l\'article ou du blog Blogspot : ');
   }
@@ -36,76 +36,72 @@ export async function main() {
     process.exit(1);
   }
 
-  // Check if it's a single post or a whole blog
   const isSinglePost = /\.html($|\?)/i.test(targetUrl);
 
   if (isSinglePost) {
-    const result = await downloadBlogspotPost(targetUrl);
-    if (result.cloudLinks && result.cloudLinks.length > 0) {
-      console.log(`\n[+] Liens de telechargement direct trouves dans l'article :`);
-      result.cloudLinks.forEach(l => console.log('  -', l));
-      
-      const save = await prompt('\nVoulez-vous ajouter ces liens a files.txt ? (O/n) : ');
-      if (save === '' || save.toLowerCase() === 'o' || save.toLowerCase() === 'oui' || save.toLowerCase() === 'y') {
-        fs.appendFileSync(FILES_TXT_PATH, '\n' + result.cloudLinks.join('\n') + '\n', 'utf-8');
-        console.log(`[OK] Liens ajoutes a ${path.basename(FILES_TXT_PATH)}`);
-      }
-    }
-  } else {
-    // Whole blog
-    const posts = await crawlBlogspotBlog(targetUrl);
-    if (posts.length === 0) {
-      console.log('[!] Aucun article trouve sur ce blog.');
+    console.log(`\nAnalyse de l'article : ${targetUrl}`);
+    const res = await extractScansFromPost(targetUrl);
+    console.log(`\nArticle : "${res.title}"`);
+    console.log(`Fichiers de scans détectés : ${res.scanLinks.length}`);
+
+    if (res.scanLinks.length === 0) {
+      console.log('[!] Aucun lien de scan (Mediafire, Archive.org, Drive, CBR/PDF) trouvé dans cet article.');
       return;
     }
 
-    console.log(`\nQue souhaitez-vous faire avec les ${posts.length} articles repertories ?`);
-    console.log(' [1] Extraire tous les liens de telechargement (Mediafire, Archive.org...) vers files.txt');
-    console.log(' [2] Telecharger et creer les archives .CBR de tous les articles avec planches');
-    console.log(' [3] Choisir un article specifique a telecharger');
-    console.log(' [4] Annuler');
+    console.log('\nListe des scans disponibles :');
+    res.scanLinks.forEach((item, idx) => {
+      console.log(` [${idx + 1}] [${item.hoster}] ${item.linkText}`);
+      console.log(`     -> ${item.url}`);
+    });
 
-    const choice = await prompt('\nVotre choix (1-4) : ');
+    const choice = await prompt('\nAjouter ces liens à files.txt pour téléchargement ? (O/n) : ');
+    if (choice === '' || choice.toLowerCase() === 'o' || choice.toLowerCase() === 'oui' || choice.toLowerCase() === 'y') {
+      const linksToAdd = res.scanLinks.map(i => i.url).join('\n');
+      fs.appendFileSync(FILES_TXT_PATH, `\n# Scans extraits de "${res.title}"\n${linksToAdd}\n`, 'utf-8');
+      console.log(`[OK] Liens ajoutés à ${path.basename(FILES_TXT_PATH)} !`);
+      console.log(`[Astuce] Lancez l'option [2] dans download-files.bat pour lancer le téléchargement direct.`);
+    }
+  } else {
+    const allScans = await crawlBlogspotScans(targetUrl);
+
+    if (allScans.length === 0) {
+      console.log('[!] Aucun lien de scan trouvé sur ce blog.');
+      return;
+    }
+
+    // Breakdown by hoster
+    const hosterStats = {};
+    for (const item of allScans) {
+      hosterStats[item.hoster] = (hosterStats[item.hoster] || 0) + 1;
+    }
+
+    console.log('\nRépartition des hébergeurs de scans trouvés :');
+    for (const [hoster, count] of Object.entries(hosterStats)) {
+      console.log(` - ${hoster.padEnd(15)} : ${count} tomes/fichiers`);
+    }
+
+    console.log('\nActions :');
+    console.log(` [1] Exporter tous les ${allScans.length} liens de scans vers files.txt`);
+    console.log(` [2] Filtrer et exporter uniquement un hébergeur (ex: Mediafire ou Archive.org)`);
+    console.log(' [3] Annuler');
+
+    const choice = await prompt('\nVotre choix (1-3) : ');
 
     if (choice === '1') {
-      console.log(`\n[>] Extraction des liens de telechargement sur ${posts.length} articles...`);
-      const allExtractedLinks = [];
-      for (let i = 0; i < posts.length; i++) {
-        process.stdout.write(`\r  ... [${i + 1}/${posts.length}] Analyse : ${posts[i].title.substring(0, 40)}`);
-        try {
-          const res = await downloadBlogspotPost(posts[i].url, { concurrency: 1 });
-          if (res.cloudLinks) {
-            for (const l of res.cloudLinks) {
-              if (!allExtractedLinks.includes(l)) {
-                allExtractedLinks.push(l);
-              }
-            }
-          }
-        } catch (e) {}
-      }
-
-      console.log(`\n\n[OK] ${allExtractedLinks.length} liens de tomes complets trouves !`);
-      fs.appendFileSync(FILES_TXT_PATH, '\n# Liens extraits de ' + targetUrl + '\n' + allExtractedLinks.join('\n') + '\n', 'utf-8');
-      console.log(`[OK] Liens ajoutes avec succes a : ${FILES_TXT_PATH}`);
-      console.log(`[Conseil] Vous pouvez maintenant lancer Option [2] dans download-files.bat pour tout telecharger a pleine vitesse.`);
+      const content = '\n# Scans extraits de ' + targetUrl + '\n' + allScans.map(s => s.url).join('\n') + '\n';
+      fs.appendFileSync(FILES_TXT_PATH, content, 'utf-8');
+      console.log(`\n[OK] Les ${allScans.length} liens de scans ont été enregistrés dans : ${FILES_TXT_PATH}`);
+      console.log(`[Conseil] Vous pouvez lancer Option [2] dans download-files.bat pour télécharger les tomes souhaités.`);
     } else if (choice === '2') {
-      for (let i = 0; i < posts.length; i++) {
-        console.log(`\n--- Article [${i + 1}/${posts.length}] : ${posts[i].title} ---`);
-        try {
-          await downloadBlogspotPost(posts[i].url);
-        } catch (err) {
-          console.warn(`[!] Erreur sur ${posts[i].url}:`, err.message);
-        }
-      }
-    } else if (choice === '3') {
-      console.log('\nListe des 20 premiers articles :');
-      posts.slice(0, 20).forEach((p, idx) => console.log(` [${idx + 1}] ${p.title}`));
-      const num = await prompt('\nNumero de l\'article a telecharger : ');
-      const idx = parseInt(num, 10) - 1;
-      if (idx >= 0 && idx < posts.length) {
-        await downloadBlogspotPost(posts[idx].url);
+      const filter = await prompt('Nom de l\'hébergeur (ex: Mediafire, Archive.org) : ');
+      const filtered = allScans.filter(s => s.hoster.toLowerCase().includes(filter.toLowerCase()));
+      if (filtered.length > 0) {
+        const content = `\n# Scans (${filter}) extraits de ${targetUrl}\n` + filtered.map(s => s.url).join('\n') + '\n';
+        fs.appendFileSync(FILES_TXT_PATH, content, 'utf-8');
+        console.log(`\n[OK] ${filtered.length} liens (${filter}) enregistrés dans ${FILES_TXT_PATH} !`);
       } else {
-        console.log('[!] Numero invalide.');
+        console.log(`[!] Aucun lien trouvé pour "${filter}".`);
       }
     }
   }

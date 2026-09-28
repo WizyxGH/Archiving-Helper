@@ -199,6 +199,22 @@ async function resolve1fichier(url, apiKey = null) {
   throw new Error('Unable to extract 1fichier direct download link.')
 }
 
+export async function resolveMediafire(url) {
+  const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
+  const pageRes = await fetch(url, { headers: { 'User-Agent': userAgent } });
+  if (!pageRes.ok) throw new Error(`Mediafire returned HTTP ${pageRes.status}`);
+
+  const html = await pageRes.text();
+  const directMatch = html.match(/aria-label=["']Download file["'][^>]+href=["'](https?:\/\/[^"']+)["']/i) ||
+                      html.match(/id=["']downloadButton["'][^>]+href=["'](https?:\/\/[^"']+)["']/i) ||
+                      html.match(/href=["'](https?:\/\/download\d+\.mediafire\.com\/[^"']+)["']/i);
+
+  if (directMatch) {
+    return { downloadUrl: directMatch[1], filename: null };
+  }
+  throw new Error('Unable to extract Mediafire direct download link.');
+}
+
 // ─── High-Speed Aria2c Downloader ───────────────────────────────────────────
 
 function downloadWithAria2(aria2Path, urls, outputDir, options = {}) {
@@ -241,7 +257,13 @@ async function downloadWithNode(rawUrl, outputDir, options = {}) {
   let targetUrl = rawUrl
   let filename = null
 
-  if (/1fichier\.com|alterupload\.com|desfichiers\.com|dfichiers\.com/i.test(rawUrl)) {
+  if (/mediafire\.com/i.test(rawUrl)) {
+    process.stdout.write(`Resolving Mediafire link... `)
+    const resolved = await resolveMediafire(rawUrl)
+    targetUrl = resolved.downloadUrl
+    filename = resolved.filename
+    console.log('OK')
+  } else if (/1fichier\.com|alterupload\.com|desfichiers\.com|dfichiers\.com/i.test(rawUrl)) {
     process.stdout.write(`Resolving 1fichier link... `)
     const resolved = await resolve1fichier(rawUrl, options.apiKey)
     targetUrl = resolved.downloadUrl

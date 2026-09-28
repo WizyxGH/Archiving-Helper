@@ -1,9 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import AdmZip from 'adm-zip';
-import { cleanJpegLossless } from './jpeg.mjs';
-import { naturalSort } from './sorter.mjs';
+import { resolveMediafire } from '../download.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -20,20 +18,9 @@ function sanitizeFilename(name) {
 }
 
 /**
- * Transforms any Google / Blogger image URL into its highest possible native resolution (/s0/)
+ * Safe fetch with auto-retry
  */
-export function toMaxResolutionUrl(url) {
-  let u = url;
-  u = u.replace(/\/s[0-9]+(-rw|-h)?\//i, '/s0/');
-  u = u.replace(/\/w[0-9]+-h[0-9]+[^\/]*\//i, '/s0/');
-  u = u.replace(/\/d\//i, '/s0/');
-  return u;
-}
-
-/**
- * Safe fetch with auto-retry on HTTP 429 / 5xx
- */
-async function safeFetch(url, options = {}, retries = 4, backoffMs = 1500) {
+async function safeFetch(url, options = {}, retries = 3) {
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
       const res = await fetch(url, {
@@ -43,188 +30,122 @@ async function safeFetch(url, options = {}, retries = 4, backoffMs = 1500) {
         },
         ...options
       });
-      if (res.status === 429 || res.status >= 500) {
-        if (attempt === retries) return res;
-        await new Promise(r => setTimeout(r, backoffMs * attempt));
-        continue;
-      }
       return res;
     } catch (err) {
       if (attempt === retries) throw err;
-      await new Promise(r => setTimeout(r, backoffMs * attempt));
+      await new Promise(r => setTimeout(r, 1000 * attempt));
     }
   }
 }
 
 /**
- * Scrapes and packages a single Blogspot post as a lossless .cbr comic
+ * Extracts all real scan download links from a single Blogspot post
  */
-export async function downloadBlogspotPost(postUrl, options = {}) {
-  const outputDir = options.outputDir || DEFAULT_OUTPUT_DIR;
-  fs.mkdirSync(outputDir, { recursive: true });
-
-  console.log(`\n======================================================`);
-  console.log(`[Blogspot] Analyse du post : ${postUrl}`);
-  console.log(`======================================================`);
-
+export async function extractScansFromPost(postUrl) {
   const res = await safeFetch(postUrl);
   if (!res.ok) {
-    throw new Error(`Impossible de charger la page (HTTP ${res.status})`);
+    throw new Error(`Impossible de charger l'article (HTTP ${res.status})`);
   }
   const html = await res.text();
 
-  // Extract Title
-  let title = 'Blogspot_Comic';
+  let title = 'Article';
   const titleMatch = html.match(/<title>([^<]+)<\/title>/i);
   if (titleMatch) {
     title = titleMatch[1].replace(/[-|].*$/, '').trim();
   }
-  title = sanitizeFilename(title);
 
-  // Extract download / cloud links (Mediafire, Mega, Drive, Archive.org, 4Shared, CBR, PDF)
-  const linkRegex = /href=["']([^"']+)["']/gi;
-  let lm;
-  const cloudLinks = [];
-  while ((lm = linkRegex.exec(html)) !== null) {
-    const href = lm[1];
+  // Find all links to real scan files (Mediafire, Archive.org, 4Shared, Google Drive, Mega, Direct CBR/PDF/ZIP)
+  const linkRegex = /<a[^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  let m;
+  const scanLinks = [];
+
+  while ((m = linkRegex.exec(html)) !== null) {
+    const href = m[1].trim();
+    const anchorText = m[2].replace(/<[^>]+>/g, '').trim();
+
     if (/mediafire\.com|drive\.google\.com|mega\.nz|4shared\.com|archive\.org\/download|dropbox\.com|1fichier\.com|\.(cbr|cbz|pdf|zip|rar)($|\?)/i.test(href)) {
-      if (!cloudLinks.includes(href)) {
-        cloudLinks.push(href);
+      if (!scanLinks.some(item => item.url === href)) {
+        let hoster = 'Direct';
+        if (/mediafire\.com/i.test(href)) hoster = 'Mediafire';
+        else if (/archive\.org/i.test(href)) hoster = 'Archive.org';
+        else if (/drive\.google\.com/i.test(href)) hoster = 'Google Drive';
+        else if (/4shared\.com/i.test(href)) hoster = '4Shared';
+        else if (/mega\.nz/i.test(href)) hoster = 'Mega';
+        else if (/1fichier\.com/i.test(href)) hoster = '1fichier';
+
+        scanLinks.push({
+          postTitle: title,
+          linkText: anchorText || title,
+          url: href,
+          hoster
+        });
       }
-    }
-  }
-
-  // Extract comic image URLs
-  const imgRegex = /src=["']([^"']+)["']/gi;
-  let im;
-  const rawImages = [];
-  while ((im = imgRegex.exec(html)) !== null) {
-    const src = im[1];
-    if (/blogger\.googleusercontent\.com|bp\.blogspot\.com|googleusercontent\.com/i.test(src)) {
-      if (/favicon|s16-h|s35-c|w72-h72|avatar|Mickey\+lOGO/i.test(src)) continue;
-      const maxResUrl = toMaxResolutionUrl(src);
-      if (!rawImages.includes(maxResUrl)) {
-        rawImages.push(maxResUrl);
-      }
-    }
-  }
-
-  console.log(`[+] Titre detecte : ${title}`);
-  if (cloudLinks.length > 0) {
-    console.log(`[+] Liens de telechargement direct / cloud detectes : ${cloudLinks.length}`);
-  }
-  console.log(`[+] Planches d'images Blogspot detectees : ${rawImages.length}`);
-
-  // If there are comic images embedded directly, download and pack them into .cbr
-  if (rawImages.length > 1) {
-    const tempDir = path.join(outputDir, `_temp_${Date.now()}`);
-    fs.mkdirSync(tempDir, { recursive: true });
-
-    try {
-      console.log(`\n[>] Telechargement de ${rawImages.length} planches en qualite native (s0)...`);
-      const downloadedFiles = [];
-
-      const CONCURRENCY = options.concurrency || 5;
-      let currentIndex = 0;
-
-      async function worker() {
-        while (currentIndex < rawImages.length) {
-          const idx = currentIndex++;
-          const imgUrl = rawImages[idx];
-          const pageNum = idx + 1;
-          const ext = imgUrl.toLowerCase().includes('.png') ? '.png' : (imgUrl.toLowerCase().includes('.webp') ? '.webp' : '.jpg');
-          const fileName = `${title}_${pageNum}${ext}`;
-          const filePath = path.join(tempDir, fileName);
-
-          try {
-            const imgRes = await safeFetch(imgUrl);
-            if (imgRes.ok) {
-              const arrayBuf = await imgRes.arrayBuffer();
-              let buf = Buffer.from(arrayBuf);
-              if (ext === '.jpg') {
-                buf = cleanJpegLossless(buf);
-              }
-              fs.writeFileSync(filePath, buf);
-              downloadedFiles.push(filePath);
-              process.stdout.write(`\r  ... [${downloadedFiles.length}/${rawImages.length}] Page ${pageNum} telechargee`);
-            } else {
-              console.warn(`\n[!] Echec page ${pageNum} (HTTP ${imgRes.status})`);
-            }
-          } catch (e) {
-            console.warn(`\n[!] Erreur telechargement page ${pageNum}:`, e.message);
-          }
-          await new Promise(r => setTimeout(r, 40));
-        }
-      }
-
-      const workers = Array.from({ length: CONCURRENCY }, () => worker());
-      await Promise.all(workers);
-      console.log(`\n[OK] Toutes les planches sont telechargees.`);
-
-      // Package to CBR using AdmZip
-      const cbrPath = path.join(outputDir, `${title}.cbr`);
-      console.log(`[>] Creation de l'archive CBR : ${path.basename(cbrPath)}...`);
-
-      const sortedFiles = naturalSort(downloadedFiles);
-      const zip = new AdmZip();
-      for (const f of sortedFiles) {
-        zip.addLocalFile(f);
-      }
-      zip.writeZip(cbrPath);
-
-      const stats = fs.statSync(cbrPath);
-      console.log(`[SUCCES] BD cree avec succes : ${path.basename(cbrPath)} (${(stats.size / (1024 * 1024)).toFixed(2)} Mo)`);
-    } finally {
-      try {
-        fs.rmSync(tempDir, { recursive: true, force: true });
-      } catch (e) {}
     }
   }
 
   return {
     title,
     postUrl,
-    cloudLinks,
-    imageCount: rawImages.length
+    scanLinks
   };
 }
 
 /**
- * Crawls a whole Blogspot blog or label via Blogger JSON Feed API
+ * Crawls a whole Blogspot blog and collects all real comic scan download links
  */
-export async function crawlBlogspotBlog(blogBaseUrl) {
+export async function crawlBlogspotScans(blogBaseUrl) {
   let cleanBase = blogBaseUrl.replace(/\/+$/, '');
   if (!cleanBase.startsWith('http')) {
     cleanBase = `https://${cleanBase}`;
   }
 
   console.log(`\n======================================================`);
-  console.log(`[Blogspot Crawler] Exploration du blog : ${cleanBase}`);
+  console.log(`[Blogspot Scraper] Recherche des fichiers de scans sur : ${cleanBase}`);
   console.log(`======================================================`);
 
   let startIndex = 1;
   const maxResults = 500;
-  const allPosts = [];
+  const allScanLinks = [];
+  let totalPosts = 0;
 
   while (true) {
     const feedUrl = `${cleanBase}/feeds/posts/default?alt=json&start-index=${startIndex}&max-results=${maxResults}`;
-    console.log(`[>] Lecture du flux (index ${startIndex})...`);
+    process.stdout.write(`\r[>] Lecture des métadonnées du blog (index ${startIndex})...`);
     
     const res = await safeFetch(feedUrl);
-    if (!res.ok) {
-      console.warn(`[!] Fin du flux ou erreur HTTP ${res.status}`);
-      break;
-    }
+    if (!res.ok) break;
 
     const data = await res.json();
     const entries = data.feed?.entry || [];
     if (entries.length === 0) break;
 
+    totalPosts += entries.length;
+
     for (const entry of entries) {
-      const altLink = entry.link?.find(l => l.rel === 'alternate')?.href;
-      const title = entry.title?.$t || 'Sans_Titre';
-      if (altLink) {
-        allPosts.push({ title, url: altLink });
+      const postTitle = entry.title?.$t || 'Sans Titre';
+      const content = entry.content?.$t || '';
+
+      const linkRegex = /href=["']([^"']+)["']/gi;
+      let lm;
+      while ((lm = linkRegex.exec(content)) !== null) {
+        const href = lm[1].trim();
+        if (/mediafire\.com|drive\.google\.com|mega\.nz|4shared\.com|archive\.org\/download|dropbox\.com|1fichier\.com|\.(cbr|cbz|pdf|zip|rar)($|\?)/i.test(href)) {
+          if (!allScanLinks.some(item => item.url === href)) {
+            let hoster = 'Direct';
+            if (/mediafire\.com/i.test(href)) hoster = 'Mediafire';
+            else if (/archive\.org/i.test(href)) hoster = 'Archive.org';
+            else if (/drive\.google\.com/i.test(href)) hoster = 'Google Drive';
+            else if (/4shared\.com/i.test(href)) hoster = '4Shared';
+            else if (/mega\.nz/i.test(href)) hoster = 'Mega';
+            else if (/1fichier\.com/i.test(href)) hoster = '1fichier';
+
+            allScanLinks.push({
+              postTitle,
+              url: href,
+              hoster
+            });
+          }
+        }
       }
     }
 
@@ -235,6 +156,7 @@ export async function crawlBlogspotBlog(blogBaseUrl) {
     }
   }
 
-  console.log(`[OK] Total articles/tomes repertories sur le blog : ${allPosts.length}`);
-  return allPosts;
+  console.log(`\n\n[OK] ${totalPosts} articles analysés.`);
+  console.log(`[OK] ${allScanLinks.length} vrais fichiers de scans (tomes complets) trouvés !`);
+  return allScanLinks;
 }
