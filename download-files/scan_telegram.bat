@@ -1,14 +1,19 @@
 @echo off
-setlocal
+setlocal enabledelayedexpansion
 title Telegram Channel Size Scanner
 cd /d "%~dp0"
 
-where python >nul 2>nul
-if errorlevel 1 (
-    echo Python n'est pas installe ou n'est pas dans le PATH.
-    pause
-    exit /b 1
+set "PYTHON_BIN=C:\Users\starl\AppData\Local\Programs\Python\Python312\python.exe"
+if exist "!PYTHON_BIN!" (
+    "!PYTHON_BIN!" "%~dp0scan_telegram_channel.py"
+    goto :end
 )
 
-python scan_telegram_channel.py
+py -3 "%~dp0scan_telegram_channel.py"
+if not errorlevel 1 goto :end
+
+python "%~dp0scan_telegram_channel.py"
+
+:end
+echo.
 pause
