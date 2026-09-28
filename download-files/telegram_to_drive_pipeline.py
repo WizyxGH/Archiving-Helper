@@ -91,6 +91,8 @@ class PipelineConfig:
     dry_run: bool = True
     limit: Optional[int] = None
     session_name: str = "telegram_scanner.session"
+    delete_identical_duplicates: bool = True
+    purge_identical_only: bool = False
 
     @classmethod
     def from_env(cls, env_path: Optional[Path] = None, **overrides) -> "PipelineConfig":
@@ -125,7 +127,9 @@ class PipelineConfig:
             api_hash=api_hash,
             channel_url=channel,
             dry_run=overrides.get("dry_run", True),
-            limit=overrides.get("limit")
+            limit=overrides.get("limit"),
+            delete_identical_duplicates=overrides.get("delete_identical_duplicates", True),
+            purge_identical_only=overrides.get("purge_identical_only", False)
         )
 
 # ==============================================================================
@@ -160,6 +164,29 @@ def clean_stem(filename: str) -> str:
 def natural_keys(text: str):
     """Sorting key that handles human natural page order (e.g., 1, 2, ... 9, 10, 100)."""
     return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', str(text))]
+
+def inspect_archive_for_inducks_name(file_path: Path) -> Optional[str]:
+    """Inspects archive contents (zip/rar) to extract the canonical Inducks stem from internal image names."""
+    try:
+        if zipfile.is_zipfile(file_path):
+            with zipfile.ZipFile(file_path, 'r') as zf:
+                for name in zf.namelist():
+                    base = Path(name).name
+                    m = re.match(r"^([a-zA-Z]{2,3}_[a-zA-Z0-9]+_\d+)(?:_\d+)?\.(?:jpe?g|png|webp)$", base, re.I)
+                    if m:
+                        return m.group(1)
+        # Binary scan for ZIP or RAR headers (works without unrar)
+        with open(file_path, "rb") as f:
+            chunk = f.read(4 * 1024 * 1024)
+            matches = re.findall(rb"([a-zA-Z]{2,3}_[a-zA-Z0-9]+_\d+)(?:_\d+)?\.(?:jpe?g|png|webp)", chunk, re.I)
+            if matches:
+                for raw_m in matches:
+                    candidate = raw_m.decode('utf-8', errors='ignore')
+                    if not candidate.lower().startswith(('page', 'image', 'img', 'scan', 'p')):
+                        return candidate
+    except Exception:
+        pass
+    return None
 
 # ==============================================================================
 # Catalog & Inducks Organization
@@ -373,6 +400,24 @@ class TelegramArchivePipeline:
                 if tg_ext != drive_ext:
                     notes += f" (Format: TG {tg_ext} vs Drive {drive_ext})"
 
+                # Check if identical and can be safely purged from Telegram
+                deleted = False
+                status_str = "SKIPPED_EXISTING"
+                if not self.config.dry_run and self.config.delete_identical_duplicates:
+                    if diff == 0 and drive_path.exists() and drive_sz > 0:
+                        try:
+                            print(f"[PURGE-DOUBLON] #{msg_id} {canonical_name} ({format_size(drive_sz)}) identique au Drive -> Suppression Telegram...", end="", flush=True)
+                            await self.client.delete_messages(entity, msg_id)
+                            deleted = True
+                            stats["purged"] = stats.get("purged", 0) + 1
+                            status_str = "PURGED_EXISTING_IDENTICAL"
+                            print(" OK", flush=True)
+                        except Exception as err:
+                            print(f" Échec: {err}", flush=True)
+                
+                if not deleted:
+                    print(f"[SKIP] #{msg_id} {canonical_name} (TG: {format_size(file_size)}) déjà sur le Drive ({format_size(drive_sz)}) [{notes}]", flush=True)
+
                 self.audit.log({
                     "timestamp": str(message.date),
                     "telegram_msg_id": msg_id,
@@ -386,11 +431,13 @@ class TelegramArchivePipeline:
                     "drive_size_bytes": drive_sz,
                     "drive_size_mb": round(drive_sz / (1024 * 1024), 2),
                     "size_diff_bytes": diff,
-                    "status": "SKIPPED_EXISTING",
-                    "audit_notes": notes
+                    "status": status_str,
+                    "audit_notes": notes + (" [Message Telegram purgé]" if deleted else "")
                 })
+                continue
 
-                print(f"[SKIP] #{msg_id} {canonical_name} (TG: {format_size(file_size)}) déjà sur le Drive ({format_size(drive_sz)}) [{notes}]", flush=True)
+            # If mode is only to purge existing identical duplicates, skip downloading new ones
+            if self.config.purge_identical_only:
                 continue
 
             # New Tome to Archive
@@ -412,7 +459,29 @@ class TelegramArchivePipeline:
                 local_staging_file = issue_temp_dir / raw_filename
                 print(f"          [1/4] Téléchargement sécurisé sur D:\\...", end="", flush=True)
                 await message.download_media(file=str(local_staging_file))
-                print(f" Terminé ({format_size(local_staging_file.stat().st_size)})", flush=True)
+                local_sz = local_staging_file.stat().st_size
+                print(f" Terminé ({format_size(local_sz)})", flush=True)
+
+                # Internal inspection for Inducks canonical name (if name is MD5 or unknown)
+                detected_stem = None
+                if not re.match(r"^[a-zA-Z]{2,3}_[a-zA-Z0-9]+_\d+", raw_filename):
+                    detected_stem = inspect_archive_for_inducks_name(local_staging_file)
+                    if detected_stem:
+                        canonical_name = f"{detected_stem}.cbr"
+                        target_folder = self.catalog.resolve_destination(canonical_name)
+                        final_cbr_path = target_folder / canonical_name
+                        print(f"          [*] Dé-anonymisé -> {canonical_name}", flush=True)
+
+                # Check if this newly detected canonical file already exists on Drive and is identical!
+                if detected_stem:
+                    post_dup = self.catalog.find_duplicate(canonical_name)
+                    if post_dup and post_dup["size"] == local_sz and post_dup["path"].exists():
+                        print(f"          [!] Déjà présent sur le Drive ({format_size(post_dup['size'])}) sous son vrai nom Inducks!", flush=True)
+                        print(f"          [4/4] Suppression du message Telegram #{msg_id}...", end="", flush=True)
+                        await self.client.delete_messages(entity, msg_id)
+                        print(" OK", flush=True)
+                        stats["purged"] = stats.get("purged", 0) + 1
+                        continue
 
                 target_folder.mkdir(parents=True, exist_ok=True)
                 print(f"          [2/4] Packaging final...", flush=True)
@@ -443,11 +512,13 @@ class TelegramArchivePipeline:
 
         print("\n" + "=" * 75, flush=True)
         print(" BILAN DU PIPELINE :", flush=True)
-        print(f"  • Total messages scannés    : {stats['total']}")
-        print(f"  • Déjà présents & audités   : {stats['skipped']}")
-        print(f"  • Traités et validés        : {stats['processed']} ({'simulés' if self.config.dry_run else 'enregistrés'})")
-        print(f"  • Erreurs de sécurité       : {stats['errors']}")
-        print(f"  • Rapport d'audit généré    : {self.config.audit_file}")
+        print(f"  • Total messages scannés       : {stats['total']}")
+        print(f"  • Déjà présents sur le Drive   : {stats['skipped']}")
+        if stats.get('purged'):
+            print(f"  • Messages doublons purgés TG  : {stats['purged']}")
+        print(f"  • Nouveaux tomes validés       : {stats['processed']} ({'simulés' if self.config.dry_run else 'enregistrés'})")
+        print(f"  • Erreurs de sécurité          : {stats['errors']}")
+        print(f"  • Rapport d'audit mis à jour   : {self.config.audit_file}")
         print("=" * 75, flush=True)
         await self.client.disconnect()
 
@@ -462,6 +533,7 @@ def main():
     )
     parser.add_argument("--channel", type=str, help="Telegram channel username, ID, or invite link.")
     parser.add_argument("--run", action="store_true", help="Launch LIVE mode (default is simulation/audit only).")
+    parser.add_argument("--purge-identical-only", action="store_true", help="Purge only Telegram messages matching identical files already on the Drive, without downloading new ones.")
     parser.add_argument("--target-dir", type=str, help="Root folder of the target comic library.")
     parser.add_argument("--staging-dir", type=str, help="Temporary staging folder on non-C drive.")
     parser.add_argument("--limit", type=int, help="Limit number of messages to process.")
@@ -473,7 +545,15 @@ def main():
     if args.target_dir: overrides["target_root"] = args.target_dir
     if args.staging_dir: overrides["staging_dir"] = args.staging_dir
     if args.limit: overrides["limit"] = args.limit
-    overrides["dry_run"] = not args.run
+
+    if args.purge_identical_only:
+        overrides["dry_run"] = False
+        overrides["purge_identical_only"] = True
+        overrides["delete_identical_duplicates"] = True
+    else:
+        overrides["dry_run"] = not args.run
+        if args.run:
+            overrides["delete_identical_duplicates"] = True
 
     config = PipelineConfig.from_env(**overrides)
     pipeline = TelegramArchivePipeline(config)
