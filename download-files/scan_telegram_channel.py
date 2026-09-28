@@ -20,7 +20,6 @@ except ImportError:
     print("Telethon n'est pas encore installe. Lancez: pip install telethon")
     sys.exit(1)
 
-# Chemin du fichier .env
 ENV_FILE = Path(__file__).parent / ".env"
 
 def load_env():
@@ -110,7 +109,7 @@ async def main():
 
     title = getattr(entity, 'title', getattr(entity, 'username', str(channel_input)))
     print(f"\n Scan du canal en cours : '{title}'...")
-    print(" (Lecture seule des metadonnees - aucun fichier n'est telecharge)")
+    print(" (Lecture seule des metadonnees - aucun fichier n'est telecharge)\n")
 
     total_files = 0
     total_bytes = 0
@@ -120,7 +119,7 @@ async def main():
     msg_count = 0
     async for message in client.iter_messages(entity):
         msg_count += 1
-        if msg_count % 200 == 0:
+        if msg_count % 100 == 0:
             print(f"  ... {msg_count} messages analyses ({total_files} fichiers trouves, {format_size(total_bytes)})", end="\r")
 
         if message.file:
@@ -156,7 +155,7 @@ async def main():
                     "size_mb": round(size / (1024 * 1024), 2)
                 })
 
-    print(f"\n Scan termine ! Total messages analyses : {msg_count}\n")
+    print(f"\n\n Scan termine ! Total messages analyses : {msg_count}\n")
     print("=" * 65)
     print(f" BILAN DU CANAL : {title}")
     print("=" * 65)
@@ -172,7 +171,6 @@ async def main():
         print(f" {ext:<12} | {data['count']:<10} | {format_size(data['size']):<15} | {pct:>6.1f}%")
     print("=" * 65)
 
-    # Export CSV inventaire
     csv_file = Path(__file__).parent / "telegram_inventory.csv"
     with open(csv_file, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=["id", "date", "filename", "extension", "size_bytes", "size_mb"])

@@ -41,12 +41,10 @@ def parse_export(json_path):
     stats = defaultdict(lambda: {"count": 0, "size": 0})
 
     for msg in messages:
-        # Fichiers documents / medias
         media_type = msg.get("media_type")
         file_name = msg.get("file_name") or msg.get("file")
         file_size = msg.get("file_size") or 0
 
-        # Si file_size n'est pas explicite, verifier la photo
         if not file_size and "photo" in msg:
             continue
 
