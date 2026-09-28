@@ -7,7 +7,6 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Natural alphanumeric sort (1, 2, 3... 10... 100)
 function naturalSort(a, b) {
   return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
 }
@@ -44,85 +43,24 @@ function cleanJpegLossless(buf) {
 }
 
 /**
- * Official INDUCKS Publication Codes (Strictly Verified, No Invented Acronyms)
- * Reference: https://inducks.org/
+ * Extracts the real name directly from the internal image filenames
+ * e.g., 'us_CBCO_10_1.jpg' -> 'us_CBCO_10'
  */
-const VERIFIED_INDUCK_CODES = [
-  // France (fr)
-  { regex: /dynastie[\s._-]*donald|carl[\s._-]*barks[\s._-]*integral|fr_ddd/i, code: 'fr_DDD' },         // La Dynastie Donald Duck
-  { regex: /journal[\s._-]*de[\s._-]*mickey[\s._-]*collector|jmc/i, code: 'fr_JMC' },                    // Le Journal de Mickey Collector
-  { regex: /journal[\s._-]*de[\s._-]*mickey|jdm/i, code: 'fr_JM' },                                      // Le Journal de Mickey
-  { regex: /grande[\s._-]*epopee[\s._-]*de[\s._-]*picsou|don[\s._-]*rosa[\s._-]*integral|fr_irs/i, code: 'fr_IRS' }, // Intégrale Don Rosa
-  { regex: /chroniques[\s._-]*de[\s._-]*fantomiald|fr_cf/i, code: 'fr_CF' },                              // Les Chroniques de Fantomiald
-  { regex: /powerduck|pkna|power[\s._-]*duck/i, code: 'fr_PKNA' },                                       // Powerduck (PKNA / Paperinik New Adventures)
-  { regex: /mickey[\s._-]*parade[\s._-]*geant|fr_mpg/i, code: 'fr_MPG' },                                // Mickey Parade Géant
-  { regex: /super[\s._-]*picsou[\s._-]*geant|fr_spg/i, code: 'fr_SPG' },                                // Super Picsou Géant
-  { regex: /picsou[\s._-]*magazine|fr_pm/i, code: 'fr_PM' },                                             // Picsou Magazine
-  { regex: /fantomiald[\s._-]*hors[\s._-]*serie|fr_fhs/i, code: 'fr_FHS' },                              // Fantomiald Hors-Série
-  { regex: /les[\s._-]*tresors[\s._-]*de[\s._-]*picsou|fr_tp/i, code: 'fr_TP' },                         // Les Trésors de Picsou
-
-  // Germany (de)
-  { regex: /ultimate[\s._-]*phantomias|ltb[\s._-]*ultimate|de_ltbup/i, code: 'de_LTBUP' },               // LTB Ultimate Phantomias
-  { regex: /lustiges[\s._-]*taschenbuch|ltb/i, code: 'de_LTB' },                                         // Lustiges Taschenbuch
-  { regex: /micky[\s._-]*maus/i, code: 'de_MM' },                                                        // Micky Maus
-
-  // Brazil (br - Official Inducks country code for Brazil)
-  { regex: /pato[\s._-]*donald/i, code: 'br_PD' },                                                       // Pato Donald (Editora Abril)
-  { regex: /tio[\s._-]*patinhas/i, code: 'br_TP' },                                                      // Tio Patinhas
-  { regex: /ze[\s._-]*carioca/i, code: 'br_ZC' },                                                        // Zé Carioca
-
-  // United States (us)
-  { regex: /uncle[\s._-]*scrooge[\s._-]*carl[\s._-]*barks|us_usca/i, code: 'us_USCA' },                 // Uncle Scrooge (Carl Barks)
-  { regex: /uncle[\s._-]*scrooge/i, code: 'us_US' },                                                     // Uncle Scrooge
-  { regex: /walt[\s._-]*disney[\s._-]*comics[\s._-]*and[\s._-]*stories|wdcs/i, code: 'us_WDC' },        // WDC&S
-
-  // Italy (it)
-  { regex: /topolino/i, code: 'it_TL' },                                                                 // Topolino
-  { regex: /paperino/i, code: 'it_PA' }                                                                  // Paperino
-];
-
-/**
- * Standardizes filename using ONLY verified Inducks codes.
- * If not matching a verified Inducks code, cleans the original title without inventing fake codes.
- */
-export function inferStandardizedName(filename, internalFiles = [], comicInfoXml = null) {
-  const combinedText = `${filename} ${internalFiles.slice(0, 5).join(' ')} ${comicInfoXml || ''}`.toLowerCase();
-  
-  // Extract issue/volume number
-  let num = null;
-  const numMatches = [
-    filename.match(/(?:tome|vol|issue|no|nr|#|part|_)[\s._-]*(\d+)/i),
-    filename.match(/(?:phantomias|donald|mickey|picsou|duck|irs|ddd|jmc|ltbup|ltb|powerduck)[\s._-]*(\d+)/i),
-    combinedText.match(/(?:u|ddd|jmc|irs|ltb|pkna|cf)[\s._-]*(\d+)/i),
-    filename.match(/(\d+)/)
-  ];
-  for (const m of numMatches) {
-    if (m && m[1]) {
-      num = parseInt(m[1], 10);
-      break;
+export function extractRealNameFromImages(imageNames, defaultName) {
+  for (const name of imageNames) {
+    // Matches patterns like 'us_CBCO_10_1.jpg' or 'fr_DDD_1_1.jpg' or 'de_LTBUP_48_1.jpg'
+    const match = name.match(/^([a-zA-Z]{2}_[a-zA-Z0-9]+_\d+)(?:_\d+)?\.(?:jpe?g|png|webp)$/i) ||
+                  name.match(/^([a-zA-Z0-9_-]+)_[0-9]+\.(?:jpe?g|png|webp)$/i);
+    if (match && match[1]) {
+      // Avoid generic names like 'page_1'
+      if (!/^(page|image|img|scan|p)$/i.test(match[1])) {
+        return match[1];
+      }
     }
   }
-
-  // 1. Check against strictly verified Inducks catalog codes
-  for (const entry of VERIFIED_INDUCK_CODES) {
-    if (entry.regex.test(combinedText)) {
-      return num ? `${entry.code}_${num}` : `${entry.code}_1`;
-    }
-  }
-
-  // 2. If no official Inducks code matches, do NOT invent one: clean the real title cleanly
-  let cleaned = path.parse(filename).name;
-  cleaned = cleaned.replace(/--\s*[a-f0-9]{32,}\s*--.*/i, ''); // strip hashes
-  cleaned = cleaned.replace(/[a-f0-9]{32,}/i, '');
-  cleaned = cleaned.replace(/_?\s*anna’s archive.*/i, '');
-  cleaned = cleaned.replace(/\s+/g, '_').replace(/_+/g, '_').replace(/^_+|_+$/g, '');
-  
-  return cleaned || `comic_${num || 1}`;
+  return defaultName;
 }
 
-/**
- * Repairs, de-anonymizes and repacks a folder/archive into a clean CBR
- */
 export async function repairAndRepackToCbr(inputPath, outputDir = 'C:\\Users\\starl\\Downloads\\Repaired_CBR') {
   if (!fs.existsSync(outputDir)) {
     fs.mkdirSync(outputDir, { recursive: true });
@@ -135,27 +73,24 @@ export async function repairAndRepackToCbr(inputPath, outputDir = 'C:\\Users\\st
   fs.mkdirSync(tempStaging, { recursive: true });
 
   const rawImageEntries = [];
-  let detectedComicInfo = null;
 
   try {
     if (stat.isDirectory()) {
-      function getAllImagesFromFolder(dir) {
+      function getAllImages(dir) {
         let imgs = [];
         const entries = fs.readdirSync(dir, { withFileTypes: true });
         for (const ent of entries) {
           const full = path.join(dir, ent.name);
           if (ent.isDirectory()) {
-            imgs = imgs.concat(getAllImagesFromFolder(full));
+            imgs = imgs.concat(getAllImages(full));
           } else if (/\.(jpe?g|png|webp|gif|bmp)$/i.test(ent.name)) {
             imgs.push(full);
-          } else if (/comicinfo\.xml/i.test(ent.name)) {
-            try { detectedComicInfo = fs.readFileSync(full, 'utf8'); } catch(e) {}
           }
         }
         return imgs;
       }
 
-      const files = getAllImagesFromFolder(inputPath);
+      const files = getAllImages(inputPath);
       files.sort((a, b) => naturalSort(path.basename(a), path.basename(b)));
       for (const f of files) {
         rawImageEntries.push({ originalName: path.basename(f), buffer: fs.readFileSync(f) });
@@ -170,9 +105,7 @@ export async function repairAndRepackToCbr(inputPath, outputDir = 'C:\\Users\\st
         const zip = new AdmZip(inputPath);
         const entries = zip.getEntries();
         for (const e of entries) {
-          if (/comicinfo\.xml/i.test(e.entryName)) {
-            try { detectedComicInfo = e.getData().toString('utf8'); } catch(e) {}
-          } else if (!e.isDirectory && /\.(jpe?g|png|webp|gif)$/i.test(e.entryName)) {
+          if (!e.isDirectory && /\.(jpe?g|png|webp|gif)$/i.test(e.entryName)) {
             rawImageEntries.push({ originalName: path.basename(e.entryName), buffer: e.getData() });
           }
         }
@@ -197,8 +130,6 @@ export async function repairAndRepackToCbr(inputPath, outputDir = 'C:\\Users\\st
               results = results.concat(getFilesRecursive(full));
             } else if (/\.(jpe?g|png|webp|gif|bmp)$/i.test(item.name)) {
               results.push(full);
-            } else if (/comicinfo\.xml/i.test(item.name)) {
-              try { detectedComicInfo = fs.readFileSync(full, 'utf8'); } catch(e) {}
             }
           }
           return results;
@@ -216,17 +147,18 @@ export async function repairAndRepackToCbr(inputPath, outputDir = 'C:\\Users\\st
       throw new Error(`Aucune image récupérable trouvée dans ${inputPath}`);
     }
 
-    // Determine clean standardized name (Verified Inducks code or clean title)
+    // 1. Get real name directly from internal images!
     const internalFilenames = rawImageEntries.map(e => e.originalName);
-    const standardBaseName = inferStandardizedName(rawBaseName, internalFilenames, detectedComicInfo);
+    const standardBaseName = extractRealNameFromImages(internalFilenames, rawBaseName);
     const finalCbrPath = path.join(outputDir, `${standardBaseName}.cbr`);
 
     console.log(`\n========================================================`);
-    console.log(`  [SOURCE]            : ${path.basename(inputPath)}`);
-    console.log(`  [CODE INDUCKS OFF.] : ${standardBaseName}.cbr`);
-    console.log(`  [PAGES EXTRAITES]   : ${rawImageEntries.length}`);
+    console.log(`  [SOURCE ANONYME]   : ${path.basename(inputPath)}`);
+    console.log(`  [NOM RÉEL EXTRAIT] : ${standardBaseName}.cbr`);
+    console.log(`  [PAGES EXTRAITES]  : ${rawImageEntries.length}`);
     console.log(`========================================================`);
 
+    // 2. Repack into clean CBR with natural order
     const newZip = new AdmZip();
     for (let i = 0; i < rawImageEntries.length; i++) {
       const item = rawImageEntries[i];
@@ -239,7 +171,7 @@ export async function repairAndRepackToCbr(inputPath, outputDir = 'C:\\Users\\st
     newZip.writeZip(finalCbrPath);
     const outStat = fs.statSync(finalCbrPath);
     const sizeMb = (outStat.size / (1024 * 1024)).toFixed(1);
-    console.log(`[+] SUCCÈS ! Fichier standardisé : ${finalCbrPath} (${sizeMb} Mo)\n`);
+    console.log(`[+] SUCCÈS ! Fichier restauré : ${finalCbrPath} (${sizeMb} Mo)\n`);
     return finalCbrPath;
 
   } finally {
@@ -247,7 +179,6 @@ export async function repairAndRepackToCbr(inputPath, outputDir = 'C:\\Users\\st
   }
 }
 
-// CLI execution
 if (process.argv[1] && process.argv[1].endsWith('repair_and_repack_cbr.mjs')) {
   const arg = process.argv[2];
   if (arg && fs.existsSync(arg)) {
