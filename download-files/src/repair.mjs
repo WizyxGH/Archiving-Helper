@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 import AdmZip from 'adm-zip';
 import { execSync } from 'child_process';
 import { cleanJpegLossless } from './jpeg.mjs';
@@ -33,7 +34,7 @@ export async function repairAndRepackToCbr(inputPath, outputDir = 'C:\\Users\\st
   const stat = fs.statSync(inputPath);
   const rawBaseName = path.parse(inputPath).name;
 
-  const tempStaging = path.join(outputDir, `_staging_${Date.now()}`);
+  const tempStaging = path.join(os.tmpdir(), 'archiving-helper', `staging_repair_${Date.now()}`);
   fs.mkdirSync(tempStaging, { recursive: true });
 
   const rawImageEntries = [];
@@ -114,11 +115,11 @@ export async function repairAndRepackToCbr(inputPath, outputDir = 'C:\\Users\\st
     // Extract standardized name directly from internal images
     const internalFilenames = rawImageEntries.map(e => e.originalName);
     const standardBaseName = extractRealNameFromImages(internalFilenames, rawBaseName);
-    const finalCbrPath = path.join(outputDir, `${standardBaseName}.cbr`);
+    const finalCbzPath = path.join(outputDir, `${standardBaseName}.cbz`);
 
     console.log(`\n========================================================`);
     console.log(`  [SOURCE ANONYME]   : ${path.basename(inputPath)}`);
-    console.log(`  [NOM RÉEL EXTRAIT] : ${standardBaseName}.cbr`);
+    console.log(`  [NOM RÉEL EXTRAIT] : ${standardBaseName}.cbz`);
     console.log(`  [PAGES EXTRAITES]  : ${rawImageEntries.length}`);
     console.log(`========================================================`);
 
@@ -131,11 +132,11 @@ export async function repairAndRepackToCbr(inputPath, outputDir = 'C:\\Users\\st
       newZip.addFile(entryName, cleaned);
     }
 
-    newZip.writeZip(finalCbrPath);
-    const outStat = fs.statSync(finalCbrPath);
+    newZip.writeZip(finalCbzPath);
+    const outStat = fs.statSync(finalCbzPath);
     const sizeMb = (outStat.size / (1024 * 1024)).toFixed(1);
-    console.log(`[+] SUCCÈS ! Fichier restauré : ${finalCbrPath} (${sizeMb} Mo)\n`);
-    return finalCbrPath;
+    console.log(`[+] SUCCÈS ! Fichier restauré : ${finalCbzPath} (${sizeMb} Mo)\n`);
+    return finalCbzPath;
 
   } finally {
     fs.rmSync(tempStaging, { recursive: true, force: true });

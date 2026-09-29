@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 import AdmZip from 'adm-zip';
 import { cleanJpegLossless } from './jpeg.mjs';
 import { naturalSort } from './sorter.mjs';
@@ -26,8 +27,8 @@ async function safeFetch(url, options = {}, maxRetries = 5) {
       });
 
       if (res.status === 429) {
-        const waitTime = attempt * 10;
-        console.warn(`\n[!] Rate-limit détecté (HTTP 429). Pause de sécurité de ${waitTime}s avant reprise...`);
+        const waitTime = attempt * 5;
+        console.warn(`\n[!] Rate-limit détecté (HTTP 429). Pause de ${waitTime}s avant reprise...`);
         await new Promise(r => setTimeout(r, waitTime * 1000));
         continue;
       }
@@ -36,16 +37,17 @@ async function safeFetch(url, options = {}, maxRetries = 5) {
       return res;
     } catch (err) {
       if (attempt === maxRetries) throw err;
-      await new Promise(r => setTimeout(r, 2000 * attempt));
+      await new Promise(r => setTimeout(r, 1000 * attempt));
     }
   }
 }
 
 /**
- * Downloads a comic from an online reader (ComicMafia) and packages it directly into a clean CBR
+ * Downloads a comic from an online reader (ComicMafia) and packages it directly into a clean CBR/CBZ
+ * Uses a high-performance worker pool and in-memory compression to maximize speed.
  */
-export async function downloadWebComic(bookUri, outputDir, customTomeNum = null) {
-  const targetDir = outputDir || path.resolve('files_downloads');
+export async function downloadWebComic(bookUri, outputDir, customTomeNum = null, options = {}) {
+  const targetDir = outputDir || path.resolve(os.homedir(), 'Downloads');
   if (!fs.existsSync(targetDir)) {
     fs.mkdirSync(targetDir, { recursive: true });
   }
@@ -64,85 +66,96 @@ export async function downloadWebComic(bookUri, outputDir, customTomeNum = null)
     tomeNum = numMatch ? parseInt(numMatch[1], 10) : 1;
   }
 
-  const archiveFilename = `de_LTBUP_${tomeNum}.cbr`;
-  const finalCbrPath = path.join(targetDir, archiveFilename);
+  const archiveFilename = `de_LTBUP_${tomeNum}.cbz`;
+  const finalCbzPath = path.join(targetDir, archiveFilename);
 
+  // Staging folder placed in OS temp dir (completely outside git) with clean naming
+  const tempFolder = path.join(os.tmpdir(), 'archiving-helper', `staging_de_LTBUP_${tomeNum}`);
+  fs.mkdirSync(tempFolder, { recursive: true });
+
+  const startTime = Date.now();
   console.log(`\n========================================================`);
   console.log(`  Archive Cible : ${archiveFilename}`);
+  console.log(`  Destination   : ${targetDir}`);
   console.log(`  Source URI    : ${rawUri}`);
   console.log(`  Mode          : Lossless (100% sans perte de qualité)`);
+  console.log(`  Temp Staging  : ${tempFolder} (hors git)`);
   console.log(`  Nomenclature  : de_LTBUP_${tomeNum}_1.jpg, de_LTBUP_${tomeNum}_2.jpg...`);
   console.log(`========================================================`);
 
-  const apiUrl = `https://comicmafia.to/reader/comic_pages.php?bookUri=${encodeURIComponent(encodeURIComponent(rawUri))}`;
-  const res = await safeFetch(apiUrl, {
-    headers: { 'Accept': 'application/json, text/javascript, */*; q=0.01' }
-  });
+  try {
+    const apiUrl = `https://comicmafia.to/reader/comic_pages.php?bookUri=${encodeURIComponent(encodeURIComponent(rawUri))}`;
+    const res = await safeFetch(apiUrl, {
+      headers: { 'Accept': 'application/json, text/javascript, */*; q=0.01' }
+    });
 
-  const json = await res.json();
-  if (json.status !== 'success' || !json.urls) {
-    throw new Error(`Comic pages API returned error for URI: ${rawUri}`);
-  }
-
-  const pageKeys = Object.keys(json.urls).sort((a, b) => parseInt(a, 10) - parseInt(b, 10));
-  const totalPages = pageKeys.length;
-  console.log(`[+] Total pages à télécharger : ${totalPages}`);
-
-  const tempFolder = path.join(targetDir, `_temp_${tomeNum}_${Date.now()}`);
-  fs.mkdirSync(tempFolder, { recursive: true });
-
-  const CONCURRENCY = 4;
-  let downloadedCount = 0;
-
-  async function downloadPage(idx) {
-    const rawPath = decodeURIComponent(json.urls[idx]);
-    const imgUrl = rawPath.startsWith('http') ? rawPath : `https://comicmafia.to${rawPath.startsWith('/') ? '' : '/'}${rawPath}`;
-    const ext = path.extname(imgUrl) || '.jpg';
-    const pageNum = parseInt(idx, 10) + 1;
-    
-    const entryName = `de_LTBUP_${tomeNum}_${pageNum}${ext}`;
-    const localFile = path.join(tempFolder, entryName);
-
-    if (fs.existsSync(localFile) && fs.statSync(localFile).size > 1000) {
-      downloadedCount++;
-      return;
+    const json = await res.json();
+    if (json.status !== 'success' || !json.urls) {
+      throw new Error(`Comic pages API returned error for URI: ${rawUri}`);
     }
 
-    const imgRes = await safeFetch(imgUrl);
-    const rawBuffer = Buffer.from(await imgRes.arrayBuffer());
-    const optimizedBuffer = cleanJpegLossless(rawBuffer);
-    
-    fs.writeFileSync(localFile, optimizedBuffer);
-    downloadedCount++;
-    process.stdout.write(`\r[*] Progression : ${downloadedCount}/${totalPages} pages (${Math.round((downloadedCount/totalPages)*100)}%)`);
-    
-    await new Promise(r => setTimeout(r, 50));
-  }
+    const pageKeys = Object.keys(json.urls).sort((a, b) => parseInt(a, 10) - parseInt(b, 10));
+    const totalPages = pageKeys.length;
+    console.log(`[+] Total pages à télécharger : ${totalPages}`);
 
-  for (let i = 0; i < totalPages; i += CONCURRENCY) {
-    const batch = [];
-    for (let j = i; j < Math.min(i + CONCURRENCY, totalPages); j++) {
-      batch.push(downloadPage(pageKeys[j]));
+    // High-performance worker pool concurrency (8-10 concurrent downloads)
+    const CONCURRENCY = options.concurrency || 8;
+    const pageBuffers = new Map();
+    let downloadedCount = 0;
+    let nextIndex = 0;
+
+    async function worker() {
+      while (nextIndex < totalPages) {
+        const currentIdx = nextIndex++;
+        const pageKey = pageKeys[currentIdx];
+        const rawPath = decodeURIComponent(json.urls[pageKey]);
+        const imgUrl = rawPath.startsWith('http') ? rawPath : `https://comicmafia.to${rawPath.startsWith('/') ? '' : '/'}${rawPath}`;
+        const pageNum = parseInt(pageKey, 10) + 1;
+
+        const imgRes = await safeFetch(imgUrl);
+        const rawBuffer = Buffer.from(await imgRes.arrayBuffer());
+        const optimizedBuffer = cleanJpegLossless(rawBuffer);
+
+        pageBuffers.set(pageNum, optimizedBuffer);
+        downloadedCount++;
+
+        const percent = Math.round((downloadedCount / totalPages) * 100);
+        const elapsedSec = Math.max(0.1, (Date.now() - startTime) / 1000);
+        const pagesPerSec = (downloadedCount / elapsedSec).toFixed(1);
+        process.stdout.write(`\r[*] Progression : ${downloadedCount}/${totalPages} pages (${percent}%) - ${pagesPerSec} p/s`);
+      }
     }
-    await Promise.all(batch);
-  }
 
-  console.log(`\n[*] Empaquetage dans l'archive CBR : ${archiveFilename}...`);
+    const workers = Array.from({ length: Math.min(CONCURRENCY, totalPages) }, () => worker());
+    await Promise.all(workers);
 
-  const zip = new AdmZip();
-  for (let p = 1; p <= totalPages; p++) {
-    const entryName = `de_LTBUP_${tomeNum}_${p}.jpg`;
-    const fullPath = path.join(tempFolder, entryName);
-    if (fs.existsSync(fullPath)) {
-      zip.addLocalFile(fullPath);
+    const downloadDuration = ((Date.now() - startTime) / 1000).toFixed(1);
+    console.log(`\n[+] Téléchargement terminé en ${downloadDuration}s (${(totalPages / downloadDuration).toFixed(1)} pages/sec).`);
+    console.log(`[*] Empaquetage direct dans l'archive CBZ : ${archiveFilename}...`);
+
+    const zip = new AdmZip();
+    for (let p = 1; p <= totalPages; p++) {
+      const entryName = `de_LTBUP_${tomeNum}_${p}.jpg`;
+      const buffer = pageBuffers.get(p);
+      if (buffer) {
+        zip.addFile(entryName, buffer);
+      }
     }
+
+    zip.writeZip(finalCbzPath);
+
+    const stats = fs.statSync(finalCbzPath);
+    const sizeMb = (stats.size / (1024 * 1024)).toFixed(1);
+    const totalDuration = ((Date.now() - startTime) / 1000).toFixed(1);
+    console.log(`[+] SUCCÈS ! Archive prête : ${finalCbzPath} (${sizeMb} Mo en ${totalDuration}s)\n`);
+    return finalCbzPath;
+
+  } finally {
+    // Guaranteed cleanup of temp folder
+    try {
+      if (fs.existsSync(tempFolder)) {
+        fs.rmSync(tempFolder, { recursive: true, force: true });
+      }
+    } catch (_) {}
   }
-
-  zip.writeZip(finalCbrPath);
-  fs.rmSync(tempFolder, { recursive: true, force: true });
-
-  const stats = fs.statSync(finalCbrPath);
-  const sizeMb = (stats.size / (1024 * 1024)).toFixed(1);
-  console.log(`[+] SUCCÈS ! Fichier prêt : ${finalCbrPath} (${sizeMb} Mo)\n`);
-  return finalCbrPath;
 }

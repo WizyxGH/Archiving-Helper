@@ -27,7 +27,6 @@ import shutil
 import zipfile
 import argparse
 import asyncio
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
@@ -43,11 +42,6 @@ try:
 except ImportError:
     print("[ERROR] Telethon is required. Install via: pip install telethon", flush=True)
     sys.exit(1)
-
-try:
-    from fast_telethon import fast_download_file
-except ImportError:
-    fast_download_file = None
 
 # ==============================================================================
 # Configuration & Constants
@@ -463,24 +457,10 @@ class TelegramArchivePipeline:
 
             try:
                 local_staging_file = issue_temp_dir / raw_filename
-                print(f"          [1/4] Téléchargement accéléré (FastTelethon) sur D:\\...", end="", flush=True)
-                t0 = time.time()
-                download_ok = False
-                if fast_download_file and message.document:
-                    try:
-                        with open(local_staging_file, "wb") as f_out:
-                            await fast_download_file(self.client, message.document, f_out)
-                        download_ok = True
-                    except Exception:
-                        download_ok = False
-
-                if not download_ok:
-                    await message.download_media(file=str(local_staging_file))
-
+                print(f"          [1/4] Téléchargement sécurisé sur D:\\...", end="", flush=True)
+                await message.download_media(file=str(local_staging_file))
                 local_sz = local_staging_file.stat().st_size
-                elapsed = max(0.01, time.time() - t0)
-                speed_mb = (local_sz / (1024 * 1024)) / elapsed
-                print(f" Terminé ({format_size(local_sz)} en {elapsed:.1f}s — {speed_mb:.1f} Mo/s)", flush=True)
+                print(f" Terminé ({format_size(local_sz)})", flush=True)
 
                 # Internal inspection for Inducks canonical name (if name is MD5 or unknown)
                 detected_stem = None

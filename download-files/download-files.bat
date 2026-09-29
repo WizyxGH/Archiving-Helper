@@ -22,9 +22,9 @@ echo ======================================================================
 echo          📦 ARCHIVING HELPER - DOWNLOADER & COMIC PIPELINE
 echo ======================================================================
 echo.
-echo   [1] Télécharger un tome Comic Viewer (ComicMafia HD -^> CBR)
+echo   [1] Télécharger un tome Comic Viewer (ComicMafia HD -^> CBZ)
 echo   [2] Télécharger les liens depuis files.txt (Multi-connexions)
-echo   [3] Réparer / Désanonymiser une archive ou dossier (Vers CBR)
+echo   [3] Réparer / Désanonymiser une archive ou dossier (Vers CBZ)
 echo   [4] Télécharger / Crawler des BDs Blogspot / Blogger (HD -^> CBR)
 echo   [5] Scanner de taille d'un canal Telegram (0 octet telecharge)
 echo   [6] Mode surveillance de dossier (Watch Folder)
@@ -45,7 +45,7 @@ goto menu
 :web_comic
 cls
 echo ======================================================================
-echo   TÉLÉCHARGEMENT COMIC VIEWER (HD LOSSLESS -^> CBR)
+echo   TÉLÉCHARGEMENT COMIC VIEWER (HD LOSSLESS -^> CBZ)
 echo ======================================================================
 echo.
 echo Collez le lien Comic Viewer ou le bookUri :
@@ -74,7 +74,7 @@ goto menu
 :repair_cbr
 cls
 echo ======================================================================
-echo   RÉPARATION ET DÉSANONYMISATION CBR
+echo   RÉPARATION ET DÉSANONYMISATION CBZ
 echo ======================================================================
 echo.
 echo Glissez-déposez le fichier ou dossier à réparer ci-dessous :

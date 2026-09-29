@@ -24,11 +24,26 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-# Temporary Staging & Local Exports
+# Temporary Staging & Local Exports / Downloads
 _staging_temp/
-*.csv
+.staging_temp/
+_temp*/
+.temp*/
+*_downloads/
+files_downloads/
+downloads/
 temp/
 tmp/
+Repaired_CBR/
+*.csv
+.aria2_input_*.txt
+
+# Comic Archives & Large Binaries
+*.cbr
+*.cbz
+*.rar
+*.7z
+*.zip
 
 # OS Files
 .DS_Store
