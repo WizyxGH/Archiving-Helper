@@ -102,7 +102,16 @@ export async function downloadWebComic(bookUri, outputDir, customTomeNum = null,
     const CONCURRENCY = options.concurrency || 8;
     const pageBuffers = new Map();
     let downloadedCount = 0;
+    let totalBytesDownloaded = 0;
     let nextIndex = 0;
+    const downloadStartTime = Date.now();
+
+    function formatEta(seconds) {
+      if (!isFinite(seconds) || seconds <= 0) return '--:--';
+      const m = Math.floor(seconds / 60);
+      const s = Math.floor(seconds % 60);
+      return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+    }
 
     async function worker() {
       while (nextIndex < totalPages) {
@@ -114,23 +123,34 @@ export async function downloadWebComic(bookUri, outputDir, customTomeNum = null,
 
         const imgRes = await safeFetch(imgUrl);
         const rawBuffer = Buffer.from(await imgRes.arrayBuffer());
+        totalBytesDownloaded += rawBuffer.length;
         const optimizedBuffer = cleanJpegLossless(rawBuffer);
 
         pageBuffers.set(pageNum, optimizedBuffer);
         downloadedCount++;
 
         const percent = Math.round((downloadedCount / totalPages) * 100);
-        const elapsedSec = Math.max(0.1, (Date.now() - startTime) / 1000);
+        const elapsedSec = Math.max(0.1, (Date.now() - downloadStartTime) / 1000);
         const pagesPerSec = (downloadedCount / elapsedSec).toFixed(1);
-        process.stdout.write(`\r[*] Progression : ${downloadedCount}/${totalPages} pages (${percent}%) - ${pagesPerSec} p/s`);
+        const mbPerSec = ((totalBytesDownloaded / (1024 * 1024)) / elapsedSec).toFixed(1);
+        const remainingPages = totalPages - downloadedCount;
+        const etaSec = pagesPerSec > 0 ? remainingPages / parseFloat(pagesPerSec) : 0;
+        const eta = formatEta(etaSec);
+
+        // 15-char progress bar
+        const barFilled = Math.round((downloadedCount / totalPages) * 15);
+        const bar = '█'.repeat(barFilled) + '░'.repeat(15 - barFilled);
+
+        process.stdout.write(`\r[*] [${bar}] ${downloadedCount}/${totalPages} (${percent}%) | ${pagesPerSec} p/s (${mbPerSec} Mo/s) | ETA: ${eta}  `);
       }
     }
 
     const workers = Array.from({ length: Math.min(CONCURRENCY, totalPages) }, () => worker());
     await Promise.all(workers);
 
-    const downloadDuration = ((Date.now() - startTime) / 1000).toFixed(1);
-    console.log(`\n[+] Téléchargement terminé en ${downloadDuration}s (${(totalPages / downloadDuration).toFixed(1)} pages/sec).`);
+    const downloadDuration = ((Date.now() - downloadStartTime) / 1000).toFixed(1);
+    const avgSpeedMb = ((totalBytesDownloaded / (1024 * 1024)) / Math.max(0.1, downloadDuration)).toFixed(1);
+    console.log(`\n[+] Téléchargement terminé en ${downloadDuration}s (${(totalPages / downloadDuration).toFixed(1)} pages/sec - ${avgSpeedMb} Mo/s).`);
     console.log(`[*] Empaquetage direct dans l'archive CBZ : ${archiveFilename}...`);
 
     const zip = new AdmZip();

@@ -1,6 +1,5 @@
 import fs from 'fs';
 import path from 'path';
-import os from 'os';
 import AdmZip from 'adm-zip';
 import { execSync } from 'child_process';
 import { cleanJpegLossless } from './jpeg.mjs';
@@ -34,7 +33,7 @@ export async function repairAndRepackToCbr(inputPath, outputDir = 'C:\\Users\\st
   const stat = fs.statSync(inputPath);
   const rawBaseName = path.parse(inputPath).name;
 
-  const tempStaging = path.join(os.tmpdir(), 'archiving-helper', `staging_repair_${Date.now()}`);
+  const tempStaging = path.join(outputDir, `_staging_${Date.now()}`);
   fs.mkdirSync(tempStaging, { recursive: true });
 
   const rawImageEntries = [];
