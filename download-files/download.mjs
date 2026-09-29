@@ -7,6 +7,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { pipeline } from 'node:stream/promises'
 import { Readable } from 'node:stream'
 import { createUnzip } from 'node:zlib'
+import { downloadWebComic } from './src/web_comic.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const binDir = path.join(scriptDir, 'bin')
@@ -232,8 +233,8 @@ function downloadWithAria2(aria2Path, urls, outputDir, options = {}) {
         `--min-split-size=1M`,
         `--max-concurrent-downloads=${options.concurrent || 4}`,
         `--continue=true`,
-        `--auto-file-renaming=false`,
-        `--allow-overwrite=false`,
+        `--auto-file-renaming=true`,
+        `--allow-overwrite=true`,
         `--summary-interval=1`,
         `--console-log-level=notice`,
       ]
@@ -483,35 +484,54 @@ async function processInputFile(filePath, options = {}) {
   console.log(`  Output:    ${outputDir}`)
   console.log(`========================================\n`)
 
-  // Resolve 1fichier links upfront if using aria2c
-  const resolvedUrls = []
-  for (let i = 0; i < urls.length; i++) {
-    const u = urls[i]
-    if (/1fichier\.com|alterupload\.com|desfichiers\.com|dfichiers\.com/i.test(u)) {
+  const webComicUrls = urls.filter(u => /comic-viewer|bookUri=|comicmafia\.to\/reader/i.test(u))
+  const directUrls = urls.filter(u => !/comic-viewer|bookUri=|comicmafia\.to\/reader/i.test(u))
+
+  // Download all Web Comic Reader volumes directly into clean CBZ archives
+  if (webComicUrls.length > 0) {
+    console.log(`[+] ${webComicUrls.length} tome(s) de lecteur Web détecté(s). Téléchargement automatique vers CBZ...`)
+    for (let i = 0; i < webComicUrls.length; i++) {
+      console.log(`\n--- [Tome Web ${i + 1}/${webComicUrls.length}] ---`)
       try {
-        process.stdout.write(`Resolving [${i + 1}/${urls.length}] 1fichier... `)
-        const res = await resolve1fichier(u, options.apiKey)
-        resolvedUrls.push(res.downloadUrl)
-        console.log('OK')
+        await downloadWebComic(webComicUrls[i], outputDir, null, options)
       } catch (err) {
-        console.error(`Failed: ${err.message}`)
+        console.error(`  [ERROR] Échec téléchargement tome : ${err.message}`)
       }
-    } else {
-      resolvedUrls.push(u)
     }
   }
 
-  const aria2Path = options.noAria2 ? null : await getAria2Path()
+  // Download all direct files / archives using aria2c (or Node fallback)
+  if (directUrls.length > 0) {
+    console.log(`\n[+] ${directUrls.length} lien(s) direct(s) à télécharger...`)
+    const resolvedUrls = []
+    for (let i = 0; i < directUrls.length; i++) {
+      const u = directUrls[i]
+      if (/1fichier\.com|alterupload\.com|desfichiers\.com|dfichiers\.com/i.test(u)) {
+        try {
+          process.stdout.write(`Resolving [${i + 1}/${directUrls.length}] 1fichier... `)
+          const res = await resolve1fichier(u, options.apiKey)
+          resolvedUrls.push(res.downloadUrl)
+          console.log('OK')
+        } catch (err) {
+          console.error(`Failed: ${err.message}`)
+        }
+      } else {
+        resolvedUrls.push(u)
+      }
+    }
 
-  if (aria2Path && resolvedUrls.length > 0) {
-    await downloadWithAria2(aria2Path, resolvedUrls, outputDir, options)
-  } else {
-    for (let i = 0; i < urls.length; i++) {
-      console.log(`[${i + 1}/${urls.length}] ${urls[i]}`)
-      try {
-        await downloadWithNode(urls[i], outputDir, options)
-      } catch (err) {
-        console.error(`  [ERROR] ${err.message}`)
+    const aria2Path = options.noAria2 ? null : await getAria2Path()
+
+    if (aria2Path && resolvedUrls.length > 0) {
+      await downloadWithAria2(aria2Path, resolvedUrls, outputDir, options)
+    } else {
+      for (let i = 0; i < directUrls.length; i++) {
+        console.log(`[${i + 1}/${directUrls.length}] ${directUrls[i]}`)
+        try {
+          await downloadWithNode(directUrls[i], outputDir, options)
+        } catch (err) {
+          console.error(`  [ERROR] ${err.message}`)
+        }
       }
     }
   }

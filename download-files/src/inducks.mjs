@@ -97,52 +97,6 @@ function normalizeText(text) {
 }
 
 /**
- * Finds any local isv.tgz or inducks_publication.isv on the machine
- */
-function findLocalInducksSource() {
-  const possiblePaths = [
-    path.join(os.homedir(), 'Downloads', 'isv.tgz'),
-    path.join(os.homedir(), 'Downloads', 'inducks_publication.isv'),
-    'C:\\Users\\starl\\Documents\\Projets\\Sites\\DisneyComicsHub\\apps\\InducksButBetter\\temp_isv\\inducks_publication.isv',
-    'C:\\Users\\starl\\Documents\\Projets\\Sites\\DisneyComicsHub\\apps\\InducksButBetter\\inducks_extracted\\inducks_publication.isv'
-  ];
-
-  for (const p of possiblePaths) {
-    if (fs.existsSync(p)) return p;
-  }
-  return null;
-}
-
-/**
- * Parses an inducks_publication.isv file into an array of publication objects
- */
-function parseIsvFile(filePath) {
-  const content = fs.readFileSync(filePath, 'utf8');
-  const lines = content.split(/\r?\n/);
-  const pubs = [];
-
-  for (const line of lines) {
-    if (!line || !line.includes('^')) continue;
-    const parts = line.split('^');
-    const pubCode = parts[0]?.trim();
-    const countryCode = parts[1]?.trim()?.toLowerCase();
-    const title = parts[3]?.trim();
-
-    if (pubCode && countryCode && title) {
-      // publicationcode in ISV is like "de/LTBUP" or "LTBUP"
-      const cleanCode = pubCode.includes('/') ? pubCode.split('/')[1] : pubCode;
-      pubs.push({
-        country: countryCode,
-        code: cleanCode,
-        title: title,
-        aliases: [title, cleanCode]
-      });
-    }
-  }
-  return pubs;
-}
-
-/**
  * Ensures Inducks database cache is synchronized (runs once per day on first usage)
  */
 export async function syncInducksDatabase(force = false) {
@@ -164,35 +118,30 @@ export async function syncInducksDatabase(force = false) {
     return loadCachedDatabase();
   }
 
-  console.log(`\n[*] Synchronisation quotidienne Inducks (${today})...`);
+  console.log(`\n[*] Synchronisation quotidienne de la base Inducks (${today})...`);
 
   let db = [...BUILTIN_PUBLICATIONS];
 
-  // Try importing from local ISV file if available
-  const localIsv = findLocalInducksSource();
-  if (localIsv) {
+  // If previous cached publications exist, merge them
+  if (fs.existsSync(DB_FILE)) {
     try {
-      console.log(`[+] Source locale Inducks détectée : ${localIsv}`);
-      const isvPubs = parseIsvFile(localIsv);
+      const existing = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
       const keys = new Set(db.map(p => `${p.country}_${p.code}`));
-      for (const item of isvPubs) {
+      for (const item of existing) {
         const k = `${item.country}_${item.code}`;
         if (!keys.has(k)) {
           db.push(item);
           keys.add(k);
         }
       }
-      console.log(`[+] ${isvPubs.length} publications importées depuis le fichier ISV.`);
-    } catch (e) {
-      console.warn(`[!] Erreur lecture ISV : ${e.message}`);
-    }
+    } catch (_) {}
   }
 
   // Persist updated database
   fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), 'utf8');
   fs.writeFileSync(META_FILE, JSON.stringify({ lastSyncDate: today, totalPublications: db.length, syncedAt: new Date().toISOString() }, null, 2), 'utf8');
 
-  console.log(`[+] Base Inducks prête : ${db.length} séries indexées.\n`);
+  console.log(`[+] Base Inducks synchronisée : ${db.length} séries indexées.\n`);
   return db;
 }
 
@@ -263,8 +212,8 @@ export async function resolveInducksPublication(rawInput, options = {}) {
         break;
       }
 
-      // Check substring containment
-      if (normSearch.includes(aliasNorm) || aliasNorm.includes(normSearch)) {
+      // Check strict substring match (only if alias is at least 4 chars long to avoid false positives)
+      if (aliasNorm.length >= 4 && (normSearch === aliasNorm || normSearch.startsWith(aliasNorm + ' ') || normSearch.endsWith(' ' + aliasNorm))) {
         const score = aliasNorm.length;
         if (score > highestScore) {
           highestScore = score;
@@ -276,17 +225,38 @@ export async function resolveInducksPublication(rawInput, options = {}) {
     if (bestMatch && highestScore === 0) break;
   }
 
-  // Default fallback if unknown: use sanitize title as generic code
-  const countryCode = bestMatch ? bestMatch.country : 'us';
-  const pubCode = bestMatch ? bestMatch.code : normSearch.replace(/\s+/g, '_').toUpperCase().slice(0, 10);
+  // Strict Zero-Guesswork Check: Never invent a code or country if not found with certainty
+  if (!bestMatch) {
+    const originalCleanName = cleanStr;
+    const archiveFilename = `${originalCleanName}.cbz`;
+    const imagePrefix = `${originalCleanName}_`;
+
+    return {
+      isCertified: false,
+      canonicalStem: null,
+      archiveFilename,
+      countryCode: null,
+      pubCode: null,
+      issueNumber,
+      imagePrefix,
+      countryFolder: 'Non_Classe',
+      seriesFolder: originalCleanName,
+      relativeDirectory: path.join('Non_Classe', originalCleanName),
+      matchedPublication: null
+    };
+  }
+
+  const countryCode = bestMatch.country;
+  const pubCode = bestMatch.code;
   const countryFolder = COUNTRY_NAMES[countryCode] || countryCode.toUpperCase();
-  const seriesFolder = bestMatch ? bestMatch.title : pubCode;
+  const seriesFolder = bestMatch.title;
 
   const canonicalStem = `${countryCode}_${pubCode}_${issueNumber}`;
   const archiveFilename = `${canonicalStem}.cbz`;
   const imagePrefix = `${canonicalStem}_`;
 
   return {
+    isCertified: true,
     canonicalStem,
     archiveFilename,
     countryCode,

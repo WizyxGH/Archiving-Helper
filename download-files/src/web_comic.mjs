@@ -66,11 +66,16 @@ export async function downloadWebComic(bookUri, outputDir, customTomeNum = null,
   const finalCbzPath = path.join(targetDir, archiveFilename);
 
   // Staging folder placed in OS temp dir (completely outside git) with clean naming
-  const tempFolder = path.join(os.tmpdir(), 'archiving-helper', `staging_${inducks.canonicalStem}`);
+  const stagingName = inducks.canonicalStem || archiveFilename.replace(/\.cbz$/i, '');
+  const tempFolder = path.join(os.tmpdir(), 'archiving-helper', `staging_${stagingName}`);
   fs.mkdirSync(tempFolder, { recursive: true });
 
   console.log(`\n========================================================`);
-  console.log(`  Série Inducks : ${inducks.matchedPublication ? inducks.matchedPublication.title : inducks.canonicalStem}`);
+  if (inducks.isCertified) {
+    console.log(`  [OK] Inducks  : ${inducks.matchedPublication.title} (${inducks.canonicalStem})`);
+  } else {
+    console.log(`  [!] Inducks   : Non répertorié avec certitude -> Nom d'origine préservé (Zéro invention)`);
+  }
   console.log(`  Archive Cible : ${archiveFilename}`);
   console.log(`  Destination   : ${targetDir}`);
   console.log(`  Source URI    : ${rawUri}`);
