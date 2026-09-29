@@ -4,6 +4,7 @@ import os from 'os';
 import AdmZip from 'adm-zip';
 import { cleanJpegLossless } from './jpeg.mjs';
 import { naturalSort } from './sorter.mjs';
+import { resolveInducksPublication } from './inducks.mjs';
 
 const DEFAULT_HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -44,7 +45,7 @@ async function safeFetch(url, options = {}, maxRetries = 5) {
 
 /**
  * Downloads a comic from an online reader (ComicMafia) and packages it directly into a clean CBR/CBZ
- * Uses a high-performance worker pool and in-memory compression to maximize speed.
+ * Uses automatic Inducks resolution, high-performance worker pool and in-memory compression.
  */
 export async function downloadWebComic(bookUri, outputDir, customTomeNum = null, options = {}) {
   const targetDir = outputDir || path.resolve(os.homedir(), 'Downloads');
@@ -59,28 +60,23 @@ export async function downloadWebComic(bookUri, outputDir, customTomeNum = null,
     if (m) rawUri = decodeURIComponent(decodeURIComponent(m[1]));
   }
 
-  // Determine volume number
-  let tomeNum = customTomeNum;
-  if (!tomeNum) {
-    const numMatch = rawUri.match(/(\d+)/);
-    tomeNum = numMatch ? parseInt(numMatch[1], 10) : 1;
-  }
-
-  const archiveFilename = `de_LTBUP_${tomeNum}.cbz`;
+  // Automatic Inducks Canonical Resolution
+  const inducks = await resolveInducksPublication(rawUri, { customTomeNum });
+  const archiveFilename = inducks.archiveFilename;
   const finalCbzPath = path.join(targetDir, archiveFilename);
 
   // Staging folder placed in OS temp dir (completely outside git) with clean naming
-  const tempFolder = path.join(os.tmpdir(), 'archiving-helper', `staging_de_LTBUP_${tomeNum}`);
+  const tempFolder = path.join(os.tmpdir(), 'archiving-helper', `staging_${inducks.canonicalStem}`);
   fs.mkdirSync(tempFolder, { recursive: true });
 
-  const startTime = Date.now();
   console.log(`\n========================================================`);
+  console.log(`  Série Inducks : ${inducks.matchedPublication ? inducks.matchedPublication.title : inducks.canonicalStem}`);
   console.log(`  Archive Cible : ${archiveFilename}`);
   console.log(`  Destination   : ${targetDir}`);
   console.log(`  Source URI    : ${rawUri}`);
   console.log(`  Mode          : Lossless (100% sans perte de qualité)`);
   console.log(`  Temp Staging  : ${tempFolder} (hors git)`);
-  console.log(`  Nomenclature  : de_LTBUP_${tomeNum}_1.jpg, de_LTBUP_${tomeNum}_2.jpg...`);
+  console.log(`  Nomenclature  : ${inducks.imagePrefix}1.jpg, ${inducks.imagePrefix}2.jpg...`);
   console.log(`========================================================`);
 
   try {
@@ -102,16 +98,7 @@ export async function downloadWebComic(bookUri, outputDir, customTomeNum = null,
     const CONCURRENCY = options.concurrency || 8;
     const pageBuffers = new Map();
     let downloadedCount = 0;
-    let totalBytesDownloaded = 0;
     let nextIndex = 0;
-    const downloadStartTime = Date.now();
-
-    function formatEta(seconds) {
-      if (!isFinite(seconds) || seconds <= 0) return '--:--';
-      const m = Math.floor(seconds / 60);
-      const s = Math.floor(seconds % 60);
-      return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-    }
 
     async function worker() {
       while (nextIndex < totalPages) {
@@ -123,34 +110,23 @@ export async function downloadWebComic(bookUri, outputDir, customTomeNum = null,
 
         const imgRes = await safeFetch(imgUrl);
         const rawBuffer = Buffer.from(await imgRes.arrayBuffer());
-        totalBytesDownloaded += rawBuffer.length;
         const optimizedBuffer = cleanJpegLossless(rawBuffer);
 
         pageBuffers.set(pageNum, optimizedBuffer);
         downloadedCount++;
 
         const percent = Math.round((downloadedCount / totalPages) * 100);
-        const elapsedSec = Math.max(0.1, (Date.now() - downloadStartTime) / 1000);
+        const elapsedSec = Math.max(0.1, (Date.now() - startTime) / 1000);
         const pagesPerSec = (downloadedCount / elapsedSec).toFixed(1);
-        const mbPerSec = ((totalBytesDownloaded / (1024 * 1024)) / elapsedSec).toFixed(1);
-        const remainingPages = totalPages - downloadedCount;
-        const etaSec = pagesPerSec > 0 ? remainingPages / parseFloat(pagesPerSec) : 0;
-        const eta = formatEta(etaSec);
-
-        // 15-char progress bar
-        const barFilled = Math.round((downloadedCount / totalPages) * 15);
-        const bar = '█'.repeat(barFilled) + '░'.repeat(15 - barFilled);
-
-        process.stdout.write(`\r[*] [${bar}] ${downloadedCount}/${totalPages} (${percent}%) | ${pagesPerSec} p/s (${mbPerSec} Mo/s) | ETA: ${eta}  `);
+        process.stdout.write(`\r[*] Progression : ${downloadedCount}/${totalPages} pages (${percent}%) - ${pagesPerSec} p/s`);
       }
     }
 
     const workers = Array.from({ length: Math.min(CONCURRENCY, totalPages) }, () => worker());
     await Promise.all(workers);
 
-    const downloadDuration = ((Date.now() - downloadStartTime) / 1000).toFixed(1);
-    const avgSpeedMb = ((totalBytesDownloaded / (1024 * 1024)) / Math.max(0.1, downloadDuration)).toFixed(1);
-    console.log(`\n[+] Téléchargement terminé en ${downloadDuration}s (${(totalPages / downloadDuration).toFixed(1)} pages/sec - ${avgSpeedMb} Mo/s).`);
+    const downloadDuration = ((Date.now() - startTime) / 1000).toFixed(1);
+    console.log(`\n[+] Téléchargement terminé en ${downloadDuration}s (${(totalPages / downloadDuration).toFixed(1)} pages/sec).`);
     console.log(`[*] Empaquetage direct dans l'archive CBZ : ${archiveFilename}...`);
 
     const zip = new AdmZip();
