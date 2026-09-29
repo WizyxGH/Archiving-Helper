@@ -7,7 +7,6 @@ import { spawn, spawnSync } from 'node:child_process'
 import { pipeline } from 'node:stream/promises'
 import { Readable } from 'node:stream'
 import { createUnzip } from 'node:zlib'
-import { downloadWebComic } from './src/web_comic.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const binDir = path.join(scriptDir, 'bin')
@@ -233,8 +232,8 @@ function downloadWithAria2(aria2Path, urls, outputDir, options = {}) {
         `--min-split-size=1M`,
         `--max-concurrent-downloads=${options.concurrent || 4}`,
         `--continue=true`,
-        `--auto-file-renaming=true`,
-        `--allow-overwrite=true`,
+        `--auto-file-renaming=false`,
+        `--allow-overwrite=false`,
         `--summary-interval=1`,
         `--console-log-level=notice`,
       ]
@@ -502,7 +501,7 @@ async function processInputFile(filePath, options = {}) {
 
   // Download all direct files / archives using aria2c (or Node fallback)
   if (directUrls.length > 0) {
-    console.log(`\n[+] ${directUrls.length} lien(s) direct(s) à télécharger...`)
+    console.log(`\n[+] ${directUrls.length} lien(s) direct(s) à télécharger avec aria2c...`)
     const resolvedUrls = []
     for (let i = 0; i < directUrls.length; i++) {
       const u = directUrls[i]
