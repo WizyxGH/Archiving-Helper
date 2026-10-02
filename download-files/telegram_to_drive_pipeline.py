@@ -29,8 +29,91 @@ import argparse
 import asyncio
 import subprocess
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
+
+# ==============================================================================
+# Nommage des dossiers de publication
+# ==============================================================================
+# Miroir de src/core/naming.mjs : le script Python classe les tomes avant que
+# Node ne soit disponible, il lui faut donc sa propre implémentation. Les deux
+# fichiers doivent rester alignes.
+
+_FORBIDDEN_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+_TRAILING_DOTS_SPACES = re.compile(r"[.\s]+$")
+_RESERVED_NAMES = {
+    "CON", "PRN", "AUX", "NUL",
+    *{f"COM{i}" for i in range(1, 10)},
+    *{f"LPT{i}" for i in range(1, 10)},
+}
+
+
+def sanitize_folder_name(title: str) -> str:
+    """Rend un titre Inducks utilisable comme nom de dossier sous Windows.
+
+    422 titres sur 7 303 contiennent un caractère interdit (`\\ / : * ? " < > |`) :
+    sans normalisation, 6 % des publications ne pourraient pas être créées.
+    """
+    name = _FORBIDDEN_CHARS.sub("-", str(title or ""))
+    name = re.sub(r"\s{2,}", " ", name)
+    name = _TRAILING_DOTS_SPACES.sub("", name)
+    name = name.strip()
+    name = re.sub(r"^-+|-+$", "", name).strip()
+
+    if not name:
+        return "Sans titre"
+    if name.upper() in _RESERVED_NAMES:
+        return f"_{name}"
+    return name
+
+
+# ==============================================================================
+# Couleurs console
+# ==============================================================================
+
+_ANSI_COLORS = {
+    "reset": "\x1b[0m",
+    "cyan": "\x1b[36m",
+    "green": "\x1b[32m",
+    "red": "\x1b[31m",
+    "yellow": "\x1b[33m",
+    "blue": "\x1b[34m",
+    "magenta": "\x1b[35m",
+    "grey": "\x1b[90m",
+    "bold": "\x1b[1m",
+}
+
+# Pas de couleur quand la sortie est redirigée vers un fichier, quand NO_COLOR
+# est défini, ou quand on force l'absence avec FORCE_COLOR=0.
+_COLOR_ENABLED = (
+    os.environ.get("FORCE_COLOR", "") not in ("", "0")
+    or (os.environ.get("NO_COLOR") is None and sys.stdout.isatty())
+)
+
+
+def colorize(value: str, color: str = "") -> str:
+    """Entoure `value` d'un code couleur ANSI, si la console le permet."""
+    if not _COLOR_ENABLED:
+        return str(value)
+    prefix = "".join(_ANSI_COLORS[c] for c in color.split("+") if c in _ANSI_COLORS)
+    return f"{prefix}{value}{_ANSI_COLORS['reset']}" if prefix else str(value)
+
+
+def dim(value: str) -> str:
+    return colorize(value, "grey")
+
+
+def success(value: str) -> str:
+    return colorize(value, "green")
+
+
+def failure(value: str) -> str:
+    return colorize(value, "red")
+
+
+def warn(value: str) -> str:
+    return colorize(value, "yellow")
 
 # Ensure unbuffered output on Windows consoles
 if hasattr(sys.stdout, 'reconfigure'):
@@ -41,7 +124,7 @@ try:
     from telethon.tl.types import DocumentAttributeFilename, Message
     from telethon.errors import SessionPasswordNeededError
 except ImportError:
-    print("[ERROR] Telethon is required. Install via: pip install telethon", flush=True)
+    print(failure("[ERREUR] Telethon est requis. Installez-le via : pip install telethon"), flush=True)
     sys.exit(1)
 
 # ==============================================================================
@@ -151,6 +234,81 @@ def format_size(bytes_val: int) -> str:
         return f"{bytes_val / 1024:.2f} Ko"
     return f"{bytes_val} B"
 
+
+# Téléchargement : dernier palier affiché, pour ne pas rafraîchir la ligne
+# à chaque bloc reçu (Telegram en émet plusieurs par seconde).
+_last_progress = {"key": None, "value": -1}
+
+
+def report_progress(progress: str, current: int, total: int) -> None:
+    """Affiche l'avancement du téléchargement, environ toutes les 5 %.
+
+    Sans cela, un tome de 30 Mo peut laisser l'écran muet plusieurs minutes
+    et donner l'impression que le script est bloqué.
+    """
+    if not total:
+        return
+
+    percent = int(current * 100 / total)
+    step = max(percent // 5, 1)
+
+    key = (progress, step)
+    if key == _last_progress["key"]:
+        return
+    _last_progress["key"] = key
+
+    filled = int(percent / 4)
+    bar = "█" * filled + "░" * (25 - filled)
+    bar_color = "green" if percent >= 90 else "yellow" if percent >= 40 else "cyan"
+
+    sys.stdout.write(
+        f"\r      {dim(progress)} {colorize(bar, bar_color)} "
+        f"{colorize(f'{percent:3d} %', 'bold')} "
+        f"{dim(f'({format_size(current)} / {format_size(total)})')}"
+    )
+    sys.stdout.flush()
+
+
+def reset_progress_line() -> None:
+    """Referme la ligne d'avancement avant d'afficher la suite."""
+    if _last_progress["key"] is not None:
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        _last_progress["key"] = None
+
+
+def write_run_log(config: "PipelineConfig", stats: dict) -> None:
+    """Ajoute le bilan du run à un journal horodaté, à côté du rapport CSV.
+
+    Le CSV trace les tomes un par un ; ce journal trace les exécutions. Il
+    permet de retrouver d'un coup d'œil combien de tomes sont passés par mode
+    et combien ont échoué, sans relire 2 400 lignes de rapport.
+    """
+    try:
+        log_directory = config.audit_file.parent
+        log_directory.mkdir(parents=True, exist_ok=True)
+        log_path = log_directory / "telegram_pipeline_runs.log"
+
+        mode = "AUDIT" if config.dry_run else "LIVE"
+        if not config.dry_run and not config.delete_identical_duplicates:
+            mode = "LIVE (sans purge)"
+
+        with open(log_path, "a", encoding="utf-8") as log:
+            log.write(
+                f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | {mode} | "
+                f"scannés={stats['total']} | "
+                f"déjà présents={stats['skipped']} | "
+                f"archivés={stats['processed']} | "
+                f"purgés={stats.get('purged', 0)} | "
+                f"erreurs={stats['errors']}"
+                + (f" | limite={config.limit}" if config.limit else "")
+                + "\n"
+            )
+    except Exception as err:
+        # Un journal non écrit ne doit jamais interrompre l'archivage.
+        print(f"[!] Journal non écrit : {err}", flush=True)
+
+
 def clean_stem(filename: str) -> str:
     """
     Strips comic extensions, multi-part indicators, and punctuation
@@ -209,14 +367,57 @@ class InducksCatalog:
         self.code_to_folder: Dict[str, Path] = {}
         self.files_by_name: Dict[str, dict] = {}
         self.files_by_stem: Dict[str, dict] = {}
+        self.publication_titles: Dict[str, str] = {}
+        self._load_publication_titles()
         self._build_index()
+
+    def _load_publication_titles(self):
+        """Charge le catalogue Inducks (country_code -> titre de publication).
+
+        Le catalogue vit en JavaScript, cote Node. On l'interroge via un petit
+        script Node plutot que de dupliquer les 7 303 titres en Python : une
+        seule source de verite, et le cache Inducks existant est reutilise.
+        """
+        script = (
+            "import('./src/core/inducks/inducks.mjs').then(async m => {"
+            "const db = await m.loadCachedDatabase();"
+            "const out = {};"
+            "for (const p of db) {"
+            "  const key = (p.country||'').toLowerCase() + '_' + (p.code||'').toUpperCase();"
+            "  if (p.title) out[key] = p.title;"
+            "}"
+            "process.stdout.write(JSON.stringify(out));"
+            "})"
+        )
+        node = shutil.which("node")
+        if not node:
+            print(warn("[!] Node.js absent : les dossiers porteront le code de publication au lieu du titre."), flush=True)
+            return
+
+        repo_root = Path(__file__).resolve().parents[1]
+        try:
+            result = subprocess.run(
+                [node, "-e", script],
+                cwd=str(repo_root),
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            if result.returncode != 0 or not result.stdout.strip():
+                print(warn("[!] Catalogue Inducks indisponible : repli sur le code de publication."), flush=True)
+                return
+
+            self.publication_titles = json.loads(result.stdout)
+            print(success(f"[OK] Catalogue Inducks : {len(self.publication_titles)} titres chargés."), flush=True)
+        except Exception as err:
+            print(warn(f"[!] Catalogue Inducks illisible ({err}) : repli sur le code."), flush=True)
 
     def _build_index(self):
         if not self.root_dir.exists():
-            print(f"[!] Target archive folder does not exist yet: {self.root_dir}", flush=True)
+            print(warn(f"[!] Dossier d'archive cible absent : {self.root_dir}"), flush=True)
             return
 
-        print(f"[*] Scanning existing library: '{self.root_dir}'...", flush=True)
+        print(colorize(f"[*] Analyse de la bibliotheque existante : '{self.root_dir}'...", "cyan"), flush=True)
         count = 0
         for entry in self.root_dir.rglob("*"):
             if not entry.is_file():
@@ -248,7 +449,7 @@ class InducksCatalog:
             except Exception:
                 continue
 
-        print(f"[OK] Indexed {count} existing tomes across {len(self.code_to_folder)} publication series.", flush=True)
+        print(success(f"[OK] {count} tomes indexes dans {len(self.code_to_folder)} series."), flush=True)
 
     def find_duplicate(self, raw_filename: str) -> Optional[dict]:
         """Looks up an issue by exact name or stem across all supported formats."""
@@ -270,8 +471,18 @@ class InducksCatalog:
         if key in self.code_to_folder:
             return self.root_dir / self.code_to_folder[key]
 
+        # Le nom du dossier est le TITRE Inducks de la publication, normalise
+        # pour Windows. Avant, on utilisait le code (Canada/BDD), ce qui
+        # dispersait une publication sur deux chemins selon le tome traite.
         country_name = DEFAULT_COUNTRY_MAP.get(country_code, country_code.upper())
-        return self.root_dir / country_name / pub_code
+        publication_title = self.catalog.publication_titles.get(key)
+
+        if not publication_title:
+            # Publication inconnue d'Inducks : le code reste le seul repere.
+            # Le nom est prefixe du code pour rester triable a cote des autres.
+            return self.root_dir / sanitize_folder_name(country_name) / sanitize_folder_name(f"{country_code.upper()} {pub_code}")
+
+        return self.root_dir / sanitize_folder_name(country_name) / sanitize_folder_name(publication_title)
 
 # ==============================================================================
 # Audit Logger
@@ -371,7 +582,7 @@ class TelegramArchivePipeline:
         mode_str = "SIMULATION / AUDIT" if self.config.dry_run else "LIVE PROCESSING"
         print("=" * 75, flush=True)
         print(f" TELEGRAM ARCHIVE PIPELINE [{mode_str}]", flush=True)
-        print(f" Source Channel  : {title}", flush=True)
+        print(f" Source Channel  : {colorize(title, 'bold')}", flush=True)
         print(f" Target Library  : {self.config.target_root}", flush=True)
         print(f" Temp Staging    : {self.config.staging_dir} (Safe on D:, C: untouched)", flush=True)
         print("=" * 75, flush=True)
@@ -390,6 +601,12 @@ class TelegramArchivePipeline:
             raw_filename = message.file.name or f"file_{msg_id}"
             file_size = message.file.size or 0
             tg_ext = Path(raw_filename).suffix.lower()
+
+            # Position dans le lot : sans ça, un long silence donne
+            # l'impression que le script est bloqué alors qu'il avance.
+            progress = f"[{stats['total']}"
+            if self.config.limit:
+                progress += f"/{self.config.limit}"
 
             canonical_name = raw_filename if tg_ext in SUPPORTED_EXTENSIONS else f"{clean_stem(raw_filename)}.cbr"
             duplicate = self.catalog.find_duplicate(raw_filename)
@@ -421,7 +638,7 @@ class TelegramArchivePipeline:
                             print(f" Échec: {err}", flush=True)
                 
                 if not deleted:
-                    print(f"[SKIP] #{msg_id} {canonical_name} (TG: {format_size(file_size)}) déjà sur le Drive ({format_size(drive_sz)}) [{notes}]", flush=True)
+                    print(dim(f"  [DOUBLON] #{msg_id} {canonical_name} (TG: {format_size(file_size)}) deja sur le Drive ({format_size(drive_sz)}) [{notes}]"), flush=True)
 
                 self.audit.log({
                     "timestamp": str(message.date),
@@ -448,7 +665,7 @@ class TelegramArchivePipeline:
             # New Tome to Archive
             target_folder = self.catalog.resolve_destination(canonical_name)
             final_cbr_path = target_folder / canonical_name
-            print(f"\n[NOUVEAU] #{msg_id} {raw_filename} ({format_size(file_size)})", flush=True)
+            print(f"\n{colorize('[NOUVEAU]', 'green+bold')} #{msg_id} {raw_filename} ({format_size(file_size)})", flush=True)
             print(f"          -> Destination: {final_cbr_path.relative_to(self.config.target_root)}", flush=True)
 
             if self.config.dry_run:
@@ -462,10 +679,16 @@ class TelegramArchivePipeline:
 
             try:
                 local_staging_file = issue_temp_dir / raw_filename
-                print(f"          [1/4] Téléchargement sécurisé sur D:\\...", end="", flush=True)
-                await message.download_media(file=str(local_staging_file))
+                print(colorize(f"      {progress} Telechargement ({format_size(file_size)})...", "blue"), flush=True)
+                await message.download_media(
+                    file=str(local_staging_file),
+                    progress_callback=lambda current, total: report_progress(
+                        progress, current, total
+                    ),
+                )
                 local_sz = local_staging_file.stat().st_size
-                print(f" Terminé ({format_size(local_sz)})", flush=True)
+                reset_progress_line()
+                print(success(f"      {progress} Telecharge ({format_size(local_sz)})"), flush=True)
 
                 # Internal inspection for Inducks canonical name (if name is MD5 or unknown)
                 detected_stem = None
@@ -475,28 +698,28 @@ class TelegramArchivePipeline:
                         canonical_name = f"{detected_stem}.cbr"
                         target_folder = self.catalog.resolve_destination(canonical_name)
                         final_cbr_path = target_folder / canonical_name
-                        print(f"          [*] Dé-anonymisé -> {canonical_name}", flush=True)
+                        print(colorize(f"          [*] De-anonymise -> {canonical_name}", "magenta"), flush=True)
 
                 # Check if this newly detected canonical file already exists on Drive and is identical!
                 if detected_stem:
                     post_dup = self.catalog.find_duplicate(canonical_name)
                     if post_dup and post_dup["size"] == local_sz and post_dup["path"].exists():
-                        print(f"          [!] Déjà présent sur le Drive ({format_size(post_dup['size'])}) sous son vrai nom Inducks!", flush=True)
-                        print(f"          [4/4] Suppression du message Telegram #{msg_id}...", end="", flush=True)
+                        print(warn(f"          [!] Deja present sur le Drive ({format_size(post_dup['size'])}) sous son vrai nom Inducks!"), flush=True)
+                        print(warn(f"          [4/4] Suppression du message Telegram #{msg_id}..."), end="", flush=True)
                         await self.client.delete_messages(entity, msg_id)
                         print(" OK", flush=True)
                         stats["purged"] = stats.get("purged", 0) + 1
                         continue
 
                 target_folder.mkdir(parents=True, exist_ok=True)
-                print(f"          [2/4] Packaging final...", flush=True)
+                print(dim("          [2/4] Copie vers la destination..."), flush=True)
                 shutil.copy2(str(local_staging_file), str(final_cbr_path))
 
                 # Verification
                 if not final_cbr_path.exists() or final_cbr_path.stat().st_size == 0:
                     raise RuntimeError("Échec intégrité : Le fichier déposé est vide ou absent.")
 
-                print(f"          [3/4] Validé à destination ({format_size(final_cbr_path.stat().st_size)})", flush=True)
+                print(success(f"          [3/4] Valide a destination ({format_size(final_cbr_path.stat().st_size)})"), flush=True)
 
                 node_executable = shutil.which("node")
                 collection_script = Path(__file__).resolve().parents[1] / "src" / "pipelines" / "4_inducks_collection" / "collection.mjs"
@@ -516,7 +739,7 @@ class TelegramArchivePipeline:
                     raise RuntimeError("La mise à jour de collection a échoué ; le message Telegram sera conservé.")
 
                 # Safe Telegram Deletion ONLY AFTER VERIFICATION
-                print(f"          [4/4] Suppression du message Telegram #{msg_id}...", end="", flush=True)
+                print(warn(f"          [4/4] Suppression du message Telegram #{msg_id}..."), end="", flush=True)
                 await self.client.delete_messages(entity, msg_id)
                 print(" OK", flush=True)
 
@@ -527,18 +750,22 @@ class TelegramArchivePipeline:
 
             except Exception as err:
                 stats["errors"] += 1
-                print(f"\n[ERREUR SÉCURITÉ] Tome #{msg_id} non archivé : {err}", flush=True)
-                print("                 -> Message Telegram PRÉSERVÉ (aucune suppression).", flush=True)
+                reset_progress_line()
+                print(failure(f"    [ERREUR SECURITE] Tome #{msg_id} non archive : {err}"), flush=True)
+                print(dim("                 -> Message Telegram PRESERVE (aucune suppression)."), flush=True)
             finally:
                 shutil.rmtree(str(issue_temp_dir), ignore_errors=True)
 
-        print("\n" + "=" * 75, flush=True)
-        print(" BILAN DU PIPELINE :", flush=True)
-        print(f"  • Total messages scannés       : {stats['total']}")
-        print(f"  • Déjà présents sur le Drive   : {stats['skipped']}")
-        if stats.get('purged'):
-            print(f"  • Messages doublons purgés TG  : {stats['purged']}")
-        print(f"  • Nouveaux tomes validés       : {stats['processed']} ({'simulés' if self.config.dry_run else 'enregistrés'})")
+        write_run_log(self.config, stats)
+
+        print("\n" + colorize("=" * 75, "grey"), flush=True)
+        print(colorize(" BILAN DU PIPELINE", "bold"), flush=True)
+        print(f"   Total messages scannes     : {colorize(str(stats['total']), 'bold')}")
+        print(f"   Deja presents sur le Drive : {dim(str(stats['skipped']))}")
+        if stats.get("purged"):
+            print(f"   Doublons purges sur TG     : {warn(str(stats['purged']))}")
+        validated_label = "simules" if self.config.dry_run else "enregistres"
+        print(f"   Nouveaux tomes valides     : {success(str(stats['processed']))} ({validated_label})")
         print(f"  • Erreurs de sécurité          : {stats['errors']}")
         print(f"  • Rapport d'audit mis à jour   : {self.config.audit_file}")
         print("=" * 75, flush=True)

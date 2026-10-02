@@ -231,11 +231,37 @@ async function showMainMenu() {
         '      (Télécharge les nouveaux tomes, ne supprime rien sur Telegram)\n\n' +
         '  [4] 📄 Ouvrir le rapport d\'audit\n' +
         '      (Ouvre le CSV généré par un audit précédent)\n\n' +
+        '  [5] 📜 Voir le journal des exécutions\n' +
+        '      (Historique des runs : date, mode, volumes, erreurs)\n\n' +
         '  [0] Retour\n\n' +
-        '  Votre choix [0-4] : '
+        '  Votre choix [0-5] : '
       )).trim();
 
       if (mode === '0' || mode === '') continue;
+
+      if (mode === '5') {
+        const logPath = path.join(
+          path.dirname(getTelegramAuditReportPath()),
+          'telegram_pipeline_runs.log'
+        );
+        console.log('\n  📜 JOURNAL DES EXÉCUTIONS\n');
+        if (!fs.existsSync(logPath)) {
+          console.log('  Aucun run enregistré pour l\'instant.\n');
+        } else {
+          const runs = fs.readFileSync(logPath, 'utf8')
+            .split(/\r?\n/)
+            .filter((line) => line.trim());
+          for (const run of runs.slice(-20)) console.log(`  ${run}`);
+          if (runs.length > 20) {
+            console.log(`\n  … ${runs.length - 20} run(s) plus ancien(s) dans ${logPath}`);
+          } else {
+            console.log(`\n  Journal complet : ${logPath}`);
+          }
+          console.log('');
+        }
+        await ask('\nAppuyez sur Entrée pour continuer...');
+        continue;
+      }
 
       if (mode === '4') {
         const reportPath = getTelegramAuditReportPath();
