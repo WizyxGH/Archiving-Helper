@@ -2,8 +2,13 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { resolveInducksIssue } from './issue_index.mjs';
+import { config, publicationsIsvPath } from '../config.mjs';
 
-const CACHE_DIR = path.join(os.homedir(), '.cache', 'archiving-helper', 'inducks');
+// Cache de la base de publications. INDUCKS_CACHE_DIR permet de le poser
+// ailleurs (disque externe, RAM disk) sans toucher au code.
+const CACHE_DIR = path.resolve(
+  config('INDUCKS_CACHE_DIR', path.join(os.homedir(), '.cache', 'archiving-helper', 'inducks'))
+);
 const DB_FILE = path.join(CACHE_DIR, 'inducks_publications.json');
 const META_FILE = path.join(CACHE_DIR, 'inducks_sync_meta.json');
 
@@ -94,12 +99,16 @@ function normalizeText(text) {
 }
 
 function findLocalInducksSource() {
+  // INDUCKS_PUBLICATIONS_ISV gagne ; sinon on cherche l'archive téléchargée
+  // puis le dossier de données. Les chemins absolus d'un autre projet
+  // disparaissent au profit de l'option de configuration.
+  const configured = config('INDUCKS_PUBLICATIONS_ISV');
   const possiblePaths = [
+    ...(configured ? [path.resolve(configured)] : []),
     path.join(os.homedir(), 'Downloads', 'isv.tgz'),
     path.join(os.homedir(), 'Downloads', 'inducks_publication.isv'),
-    'C:\\Users\\starl\\Documents\\Projets\\Sites\\DisneyComicsHub\\apps\\InducksButBetter\\inducks_extracted\\inducks_publication.isv',
-    'C:\\Users\\starl\\Documents\\Projets\\Sites\\DisneyComicsHub\\apps\\InducksButBetter\\temp_isv\\inducks_publication.isv'
-  ];
+    publicationsIsvPath(),
+  ].filter(Boolean);
 
   for (const p of possiblePaths) {
     if (fs.existsSync(p)) return p;

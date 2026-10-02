@@ -3,11 +3,16 @@ import os from 'os';
 import path from 'path';
 import { createReadStream } from 'node:fs';
 import readline from 'node:readline';
+import { fileURLToPath } from 'node:url';
+import { rootDir } from '../config.mjs';
 
+// INDUCKS_DATA_DIR gagne ; sinon on cherche les .isv dans data/inducks du
+// projet, puis dans Downloads. Aucun chemin absolu en dur : un autre poste ou
+// une autre arborescence se règle en une variable.
 const DATA_DIR_CANDIDATES = [
   process.env.INDUCKS_DATA_DIR,
+  path.join(rootDir, 'data', 'inducks'),
   path.join(os.homedir(), 'Downloads', 'inducks_extracted'),
-  'C:\\Users\\starl\\Documents\\Projets\\Sites\\DisneyComicsHub\\apps\\InducksButBetter\\inducks_extracted',
 ].filter(Boolean);
 
 let issueIndex;

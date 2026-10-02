@@ -24,8 +24,30 @@ Successfully created or repaired CBR/CBZ archives are checked and registered aut
 - Collection CSV: `download-files/files_downloads/inducks_collection.csv`
 - Pending Inducks packages: `download-files/files_downloads/inducks_upload_pending/`
 - Set `INDUCKS_COLLECTION_DIR` to change the local CSV and pending-package directory.
-- Set `TARGET_ARCHIVE_PATH` to change the Inducks library root. It can also be set in `download-files/.env`; otherwise the existing default is `D:\Duckburg Archives\Disney comics`.
-- Set `INDUCKS_DATA_DIR` to the directory containing `inducks_issue.isv` and `inducks_entry.isv` if the local Inducks dump is stored elsewhere.
+
+### Configuration
+
+Every machine-specific value lives in `src/core/config.mjs`. Values resolve in
+this order: process environment variable, then `download-files/.env`, then the
+default in the module. An empty `.env` line falls back to the default rather
+than overriding it.
+
+Copy `download-files/.env.example` to `download-files/.env` to get a documented
+template. Supported keys:
+
+| Key | Purpose | Default |
+|---|---|---|
+| `TARGET_ARCHIVE_PATH` | Library root on the destination drive | `D:\Duckburg Archives\Disney comics` |
+| `INDUCKS_DATA_DIR` | Directory holding `inducks_issue.isv` / `inducks_entry.isv` | `data/inducks`, then `~/Downloads/inducks_extracted` |
+| `INDUCKS_PUBLICATIONS_ISV` | `inducks_publication.isv` if not in the data directory | inside `INDUCKS_DATA_DIR` |
+| `INDUCKS_CACHE_DIR` | Synced publications cache | `~/.cache/archiving-helper/inducks` |
+| `RAR_EXECUTABLE` | `Rar.exe` location | PATH, then `Program Files\WinRAR` |
+
+A single value can be overridden for one run without editing the file:
+
+```sh
+TARGET_ARCHIVE_PATH=E:\Sauvegarde node src/cli/menu.mjs
+```
 
 Packages are prepared for review only. Choose **[8] Examiner les paquets Inducks en attente** in the main menu to open the folder; no files are uploaded to Inducks.org automatically. Unknown issues, unverified formats, unavailable storage drives, and conflicting destination files are kept visible for review rather than silently renamed or overwritten.
 

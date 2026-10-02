@@ -2,19 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import AdmZip from 'adm-zip';
-
-function findRarExecutable() {
-  const inPath = spawnSync('where', ['Rar.exe'], { encoding: 'utf8', shell: true });
-  if (inPath.status === 0 && inPath.stdout.trim()) return inPath.stdout.trim().split(/\r?\n/)[0];
-
-  for (const candidate of [
-    'C:\\Program Files\\WinRAR\\Rar.exe',
-    'C:\\Program Files (x86)\\WinRAR\\Rar.exe',
-  ]) {
-    if (fs.existsSync(candidate)) return candidate;
-  }
-  return null;
-}
+import { findRarExecutable } from '../../core/config.mjs';
 
 function findImages(directory) {
   const images = [];

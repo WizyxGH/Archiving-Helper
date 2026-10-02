@@ -8,6 +8,7 @@ import { orderPageKeysByInducks } from '../../core/inducks/issue_index.mjs';
 import { registerArchivedComicSafely } from '../4_inducks_collection/collection.mjs';
 import { cleanJpegLossless } from '../../core/formats/jpeg.mjs';
 import { resolveInducksPublication } from '../../core/inducks/inducks.mjs';
+import { findRarExecutable } from '../../core/config.mjs';
 
 const DEFAULT_HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -18,19 +19,6 @@ const DEFAULT_HEADERS = {
   'Sec-Fetch-Mode': 'no-cors',
   'Sec-Fetch-Site': 'same-origin'
 };
-
-function findRarExecutable() {
-  const inPath = spawnSync('where', ['Rar.exe'], { encoding: 'utf8', shell: true });
-  if (inPath.status === 0 && inPath.stdout.trim()) return inPath.stdout.trim().split(/\r?\n/)[0];
-
-  for (const candidate of [
-    'C:\\Program Files\\WinRAR\\Rar.exe',
-    'C:\\Program Files (x86)\\WinRAR\\Rar.exe',
-  ]) {
-    if (fs.existsSync(candidate)) return candidate;
-  }
-  return null;
-}
 
 async function safeFetch(url, options = {}, maxRetries = 5) {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {

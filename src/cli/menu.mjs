@@ -12,6 +12,7 @@ import { downloadLinksFile } from '../pipelines/1_acquisition/downloader.mjs';
 import { repairAndRepackToCbz } from '../core/archive.mjs';
 import { syncInducksDatabase, resolveInducksPublication } from '../core/inducks/inducks.mjs';
 import { getCollectionDirectory } from '../pipelines/5_sheets_update/collection_csv.mjs';
+import { targetArchivePath } from '../core/config.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -30,18 +31,9 @@ async function askArchiveFormat() {
 }
 
 function getTelegramAuditReportPath() {
-  const envFilePath = path.join(rootDir, 'download-files', '.env');
-  let configuredTarget = process.env.TARGET_ARCHIVE_PATH;
-
-  if (!configuredTarget && fs.existsSync(envFilePath)) {
-    const targetSetting = fs.readFileSync(envFilePath, 'utf8')
-      .split(/\r?\n/)
-      .map(line => line.trim())
-      .find(line => line.startsWith('TARGET_ARCHIVE_PATH='));
-    if (targetSetting) configuredTarget = targetSetting.slice(targetSetting.indexOf('=') + 1).trim();
-  }
-
-  const targetRoot = configuredTarget || String.raw`D:\Duckburg Archives\Disney comics`;
+  // Le CSV se pose toujours à côté de la racine d'archivage, quel que soit
+  // l'emplacement configuré (TARGET_ARCHIVE_PATH ou son défaut).
+  const targetRoot = targetArchivePath();
   return path.join(path.dirname(path.resolve(targetRoot)), 'audit_skipped_files.csv');
 }
 
