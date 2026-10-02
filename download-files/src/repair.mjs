@@ -4,6 +4,7 @@ import AdmZip from 'adm-zip';
 import { execSync } from 'child_process';
 import { cleanJpegLossless } from './jpeg.mjs';
 import { naturalSort } from './sorter.mjs';
+import { registerArchivedComicSafely } from '../../src/pipelines/4_inducks_collection/collection.mjs';
 
 /**
  * Extracts the real standardized name directly from internal image filenames
@@ -134,6 +135,7 @@ export async function repairAndRepackToCbr(inputPath, outputDir = 'C:\\Users\\st
     newZip.writeZip(finalCbzPath);
     const outStat = fs.statSync(finalCbzPath);
     const sizeMb = (outStat.size / (1024 * 1024)).toFixed(1);
+    await registerArchivedComicSafely(finalCbzPath);
     console.log(`[+] SUCCÈS ! Fichier restauré : ${finalCbzPath} (${sizeMb} Mo)\n`);
     return finalCbzPath;
 

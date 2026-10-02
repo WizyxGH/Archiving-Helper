@@ -6,6 +6,8 @@ import { spawn, spawnSync } from 'node:child_process';
 import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
 import { downloadWebComic } from './web_comic.mjs';
+import { registerArchivedComicSafely } from '../4_inducks_collection/collection.mjs';
+import { colorize } from '../../core/terminal.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -89,6 +91,15 @@ export async function downloadLinksFile(filePath, options = {}) {
     : path.join(parentDir, `${baseName}_downloads`);
 
   await mkdir(outputDir, { recursive: true });
+  const initialArchiveStates = new Map();
+  for (const entry of await readdir(outputDir, { withFileTypes: true })) {
+    if (entry.isFile() && /\.(cbr|cbz)$/i.test(entry.name)) {
+      const existingPath = path.join(outputDir, entry.name);
+      const existingStat = await stat(existingPath);
+      initialArchiveStates.set(entry.name, `${existingStat.size}:${existingStat.mtimeMs}`);
+    }
+  }
+  const registeredArchivePaths = new Set();
 
   const rawContent = await readFile(filePath, 'utf8');
   const urls = rawContent
@@ -96,29 +107,28 @@ export async function downloadLinksFile(filePath, options = {}) {
     .map(cleanUrl)
     .filter((line) => /^https?:\/\//i.test(line));
 
-  // Deduplicate identical URLs
-  const uniqueUrls = Array.from(new Set(urls));
-  const duplicateCount = urls.length - uniqueUrls.length;
+  if (urls.length === 0) throw new Error('Aucun lien valide trouvé dans le fichier.');
 
   console.log(`\n========================================`);
   console.log(`  📦 Batch Downloader`);
   console.log(`  Fichier:   ${path.basename(filePath)}`);
-  console.log(`  Liens:     ${uniqueUrls.length}${duplicateCount > 0 ? ` (${duplicateCount} doublons éliminés)` : ''}`);
+  console.log(`  Liens:     ${urls.length}`);
   console.log(`  Dossier:   ${outputDir}`);
   console.log(`========================================\n`);
 
-  const webComicUrls = uniqueUrls.filter(u => /comic-viewer|bookUri=|comicmafia\.to\/reader/i.test(u));
-  const directUrls = uniqueUrls.filter(u => !/comic-viewer|bookUri=|comicmafia\.to\/reader/i.test(u));
+  const webComicUrls = urls.filter(u => /comic-viewer|bookUri=|comicmafia\.to\/reader/i.test(u));
+  const directUrls = urls.filter(u => !/comic-viewer|bookUri=|comicmafia\.to\/reader/i.test(u));
 
-  // 1. Web Comic links (Automatic CBZ generator)
+  // 1. Web Comic links (selected CBR/CBZ format)
   if (webComicUrls.length > 0) {
-    console.log(`[+] ${webComicUrls.length} tome(s) Comic Viewer détecté(s). Téléchargement automatique vers CBZ...`);
+    console.log(`[+] ${webComicUrls.length} tome(s) Comic Viewer détecté(s). Format : ${(options.archiveFormat || 'cbr').toUpperCase()}...`);
     for (let i = 0; i < webComicUrls.length; i++) {
       console.log(`\n--- [Tome Web ${i + 1}/${webComicUrls.length}] ---`);
       try {
-        await downloadWebComic(webComicUrls[i], outputDir, null, options);
+        const archivePath = await downloadWebComic(webComicUrls[i], outputDir, null, options);
+        if (archivePath) registeredArchivePaths.add(path.resolve(archivePath));
       } catch (err) {
-        console.error(`  [ERROR] Échec téléchargement tome : ${err.message}`);
+        console.error(colorize(`  [ERROR] Échec téléchargement tome : ${err.message}`, 'red'));
       }
     }
   }
@@ -132,5 +142,15 @@ export async function downloadLinksFile(filePath, options = {}) {
     } else {
       console.log('aria2c non détecté. Téléchargement Node...');
     }
+  }
+
+  for (const entry of await readdir(outputDir, { withFileTypes: true })) {
+    if (!entry.isFile() || !/\.(cbr|cbz)$/i.test(entry.name)) continue;
+    const archivePath = path.resolve(outputDir, entry.name);
+    if (registeredArchivePaths.has(archivePath)) continue;
+    const currentStat = await stat(archivePath);
+    const state = `${currentStat.size}:${currentStat.mtimeMs}`;
+    if (initialArchiveStates.get(entry.name) === state) continue;
+    await registerArchivedComicSafely(archivePath);
   }
 }

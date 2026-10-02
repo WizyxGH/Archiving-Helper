@@ -4,6 +4,7 @@ import { open, mkdir, mkdtemp, rename, rm, stat, writeFile, readdir } from 'node
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { registerArchivedComicSafely } from '../src/pipelines/4_inducks_collection/collection.mjs'
 import vm from 'node:vm'
 import { availableParallelism } from 'node:os'
 import { Worker } from 'node:worker_threads'
@@ -358,6 +359,7 @@ async function convertSingle(input, requestedOutputDir, outputNameTemplate, arch
 
     const archiveStat = await stat(archivePath)
     console.log(`  [ARCHIVED] ${archive.toUpperCase()} size: ${formatBytes(archiveStat.size)}`)
+    await registerArchivedComicSafely(archivePath)
 
     if (!keepJpgs) {
       await rm(outputDir, { recursive: true, force: true })

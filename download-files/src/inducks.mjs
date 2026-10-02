@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { resolveInducksIssue } from '../../src/core/inducks/issue_index.mjs';
 
 const CACHE_DIR = path.join(os.homedir(), '.cache', 'archiving-helper', 'inducks');
 const DB_FILE = path.join(CACHE_DIR, 'inducks_publications.json');
@@ -225,6 +226,9 @@ export async function resolveInducksPublication(rawInput, options = {}) {
     if (bestMatch && highestScore === 0) break;
   }
 
+  const issueLookup = await resolveInducksIssue(titleWithoutNum, issueNumber, db, bestMatch);
+  if (issueLookup.available) bestMatch = issueLookup.publication;
+
   // Strict Zero-Guesswork Check: Never invent a code or country if not found with certainty
   if (!bestMatch) {
     const originalCleanName = cleanStr;
@@ -263,6 +267,9 @@ export async function resolveInducksPublication(rawInput, options = {}) {
     pubCode,
     issueNumber,
     imagePrefix,
+    issueCode: issueLookup.issue?.issueCode || null,
+    issuePageCount: issueLookup.issue?.pageCount || null,
+    issueEntries: issueLookup.entries,
     countryFolder,
     seriesFolder,
     relativeDirectory: path.join(countryFolder, seriesFolder),

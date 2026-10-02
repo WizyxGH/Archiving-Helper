@@ -27,6 +27,7 @@ import shutil
 import zipfile
 import argparse
 import asyncio
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
@@ -137,13 +138,17 @@ class PipelineConfig:
 # ==============================================================================
 
 def format_size(bytes_val: int) -> str:
-    """Formats bytes into human readable binary units."""
+    """Formats bytes into human readable binary units.
+
+    Deux décimales partout : le contrôle de doublon compare des tailles au
+    kilo-octet près, et « 28.0 Mo » contre « 28.04 Mo » masque l'écart réel.
+    """
     if bytes_val >= 1024 ** 3:
         return f"{bytes_val / (1024 ** 3):.2f} Go"
     elif bytes_val >= 1024 ** 2:
-        return f"{bytes_val / (1024 ** 2):.1f} Mo"
+        return f"{bytes_val / (1024 ** 2):.2f} Mo"
     elif bytes_val >= 1024:
-        return f"{bytes_val / 1024:.1f} Ko"
+        return f"{bytes_val / 1024:.2f} Ko"
     return f"{bytes_val} B"
 
 def clean_stem(filename: str) -> str:
@@ -492,6 +497,23 @@ class TelegramArchivePipeline:
                     raise RuntimeError("Échec intégrité : Le fichier déposé est vide ou absent.")
 
                 print(f"          [3/4] Validé à destination ({format_size(final_cbr_path.stat().st_size)})", flush=True)
+
+                node_executable = shutil.which("node")
+                collection_script = Path(__file__).resolve().parents[1] / "src" / "pipelines" / "4_inducks_collection" / "collection.mjs"
+                if not node_executable or not collection_script.exists():
+                    raise RuntimeError("Mise à jour de collection indisponible : Node.js ou le module Inducks manque.")
+                collection_result = subprocess.run(
+                    [node_executable, str(collection_script), str(final_cbr_path)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if collection_result.stdout:
+                    print(collection_result.stdout, end="", flush=True)
+                if collection_result.stderr:
+                    print(collection_result.stderr, end="", flush=True)
+                if collection_result.returncode != 0:
+                    raise RuntimeError("La mise à jour de collection a échoué ; le message Telegram sera conservé.")
 
                 # Safe Telegram Deletion ONLY AFTER VERIFICATION
                 print(f"          [4/4] Suppression du message Telegram #{msg_id}...", end="", flush=True)

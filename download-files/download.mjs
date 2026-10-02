@@ -7,6 +7,9 @@ import { spawn, spawnSync } from 'node:child_process'
 import { pipeline } from 'node:stream/promises'
 import { Readable } from 'node:stream'
 import { createUnzip } from 'node:zlib'
+import { downloadWebComic } from './download_web_comic.mjs'
+import { colorize } from '../src/core/terminal.mjs'
+import { registerArchivedComicSafely } from '../src/pipelines/4_inducks_collection/collection.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const binDir = path.join(scriptDir, 'bin')
@@ -461,6 +464,15 @@ async function processInputFile(filePath, options = {}) {
     : path.join(parentDir, `${baseName}_downloads`)
 
   await mkdir(outputDir, { recursive: true })
+  const initialArchiveStates = new Map()
+  for (const entry of await readdir(outputDir, { withFileTypes: true })) {
+    if (entry.isFile() && /\.(cbr|cbz)$/i.test(entry.name)) {
+      const existingPath = path.join(outputDir, entry.name)
+      const existingStat = await stat(existingPath)
+      initialArchiveStates.set(entry.name, `${existingStat.size}:${existingStat.mtimeMs}`)
+    }
+  }
+  const registeredArchivePaths = new Set()
 
   const rawContent = await readFile(filePath, 'utf8')
   let urls = []
@@ -486,15 +498,16 @@ async function processInputFile(filePath, options = {}) {
   const webComicUrls = urls.filter(u => /comic-viewer|bookUri=|comicmafia\.to\/reader/i.test(u))
   const directUrls = urls.filter(u => !/comic-viewer|bookUri=|comicmafia\.to\/reader/i.test(u))
 
-  // Download all Web Comic Reader volumes directly into clean CBZ archives
+  // Download all Web Comic Reader volumes into the selected archive format
   if (webComicUrls.length > 0) {
-    console.log(`[+] ${webComicUrls.length} tome(s) de lecteur Web détecté(s). Téléchargement automatique vers CBZ...`)
+    console.log(`[+] ${webComicUrls.length} tome(s) de lecteur Web détecté(s). Format : ${(options.archiveFormat || 'cbr').toUpperCase()}...`)
     for (let i = 0; i < webComicUrls.length; i++) {
       console.log(`\n--- [Tome Web ${i + 1}/${webComicUrls.length}] ---`)
       try {
-        await downloadWebComic(webComicUrls[i], outputDir, null, options)
+        const archivePath = await downloadWebComic(webComicUrls[i], outputDir, null, options)
+        if (archivePath) registeredArchivePaths.add(path.resolve(archivePath))
       } catch (err) {
-        console.error(`  [ERROR] Échec téléchargement tome : ${err.message}`)
+        console.error(colorize(`  [ERROR] Échec téléchargement tome : ${err.message}`, 'red'))
       }
     }
   }
@@ -538,6 +551,16 @@ async function processInputFile(filePath, options = {}) {
   // Run post-processing pipeline if enabled
   if (options.autoExtract || options.autoConvert) {
     await runPostProcessing(outputDir, options)
+  }
+
+  for (const entry of await readdir(outputDir, { withFileTypes: true })) {
+    if (!entry.isFile() || !/\.(cbr|cbz)$/i.test(entry.name)) continue
+    const archivePath = path.resolve(outputDir, entry.name)
+    if (registeredArchivePaths.has(archivePath)) continue
+    const currentStat = await stat(archivePath)
+    const state = `${currentStat.size}:${currentStat.mtimeMs}`
+    if (initialArchiveStates.get(entry.name) === state) continue
+    await registerArchivedComicSafely(archivePath)
   }
 }
 
@@ -588,6 +611,7 @@ function usage() {
     '\n' +
     'General Options:\n' +
     '  --output-dir <dir>    Destination directory\n' +
+    '  --format <cbr|cbz>    Comic Viewer archive format (default: cbr)\n' +
     '  --api-key <key>       1fichier API key (bypasses free waiting time)\n' +
     '  --watch [folder]      Watch folder mode (auto-downloads any new .txt/.dlc)\n' +
     '  --help, -h            Show this help message\n'
@@ -606,6 +630,7 @@ function parseArgs(args) {
   let noAria2 = false
   let connections = 16
   let concurrent = 4
+  let archiveFormat = 'cbr'
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--help' || args[i] === '-h') {
@@ -632,6 +657,11 @@ function parseArgs(args) {
       connections = Number(args[++i]) || 16
     } else if (args[i] === '--concurrent') {
       concurrent = Number(args[++i]) || 4
+    } else if (args[i] === '--format') {
+      archiveFormat = (args[++i] || '').toLowerCase()
+      if (!['cbr', 'cbz'].includes(archiveFormat)) {
+        throw new Error('Invalid --format value. Choose cbr or cbz.')
+      }
     } else if (args[i].startsWith('-')) {
       throw new Error(`Unknown option: ${args[i]}`)
     } else if (!input) {
@@ -651,6 +681,7 @@ function parseArgs(args) {
       noAria2,
       connections,
       concurrent,
+      archiveFormat,
     }
   }
 
@@ -670,6 +701,7 @@ function parseArgs(args) {
     noAria2,
     connections,
     concurrent,
+    archiveFormat,
   }
 }
 

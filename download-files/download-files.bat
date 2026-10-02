@@ -1,7 +1,7 @@
 @echo off
 chcp 65001 >nul
 setlocal enabledelayedexpansion
-title Archiving Helper - Download & Comic Pipeline
+title Archiving Helper - Downloader
 
 where node >nul 2>nul
 if errorlevel 1 (
@@ -19,10 +19,10 @@ if not "%~1"=="" (
 :menu
 cls
 echo ======================================================================
-echo          📦 ARCHIVING HELPER - DOWNLOADER & COMIC PIPELINE
+echo          📦 ARCHIVING HELPER - DOWNLOADER
 echo ======================================================================
 echo.
-echo   [1] Télécharger un tome Comic Viewer (ComicMafia HD -^> CBZ)
+echo   [1] Télécharger un tome Comic Viewer (CBR par défaut, CBZ au choix)
 echo   [2] Télécharger les liens depuis files.txt (Multi-connexions)
 echo   [3] Réparer / Désanonymiser une archive ou dossier (Vers CBZ)
 echo   [4] Télécharger / Crawler des BDs Blogspot / Blogger (HD -^> CBR)
@@ -54,8 +54,12 @@ echo.
 set /p "BOOK_URI=Lien ou URI : "
 if "%BOOK_URI%"=="" goto menu
 
+set "ARCHIVE_FORMAT=CBR"
+set /p "ARCHIVE_FORMAT=Format [CBR/CBZ, défaut CBR] : "
+if /i not "%ARCHIVE_FORMAT%"=="CBZ" set "ARCHIVE_FORMAT=CBR"
+
 echo.
-node "%~dp0download_web_comic.mjs" "%BOOK_URI%"
+node "%~dp0download_web_comic.mjs" "%BOOK_URI%" "%ARCHIVE_FORMAT%"
 echo.
 pause
 goto menu
@@ -66,7 +70,11 @@ echo ======================================================================
 echo   TÉLÉCHARGEMENT DEPUIS files.txt
 echo ======================================================================
 echo.
-node "%~dp0download.mjs" "%~dp0files.txt" --auto-extract
+set "ARCHIVE_FORMAT=CBR"
+set /p "ARCHIVE_FORMAT=Format des tomes Comic Viewer [CBR/CBZ, défaut CBR] : "
+if /i not "%ARCHIVE_FORMAT%"=="CBZ" set "ARCHIVE_FORMAT=CBR"
+echo.
+node "%~dp0download.mjs" "%~dp0files.txt" --format "%ARCHIVE_FORMAT%" --auto-extract
 echo.
 pause
 goto menu

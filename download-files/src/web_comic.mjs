@@ -1,7 +1,11 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { spawnSync } from 'node:child_process';
 import AdmZip from 'adm-zip';
+import { colorize } from '../../src/core/terminal.mjs';
+import { orderPageKeysByInducks } from '../../src/core/inducks/issue_index.mjs';
+import { registerArchivedComicSafely } from '../../src/pipelines/4_inducks_collection/collection.mjs';
 import { cleanJpegLossless } from './jpeg.mjs';
 import { naturalSort } from './sorter.mjs';
 import { resolveInducksPublication } from './inducks.mjs';
@@ -16,6 +20,19 @@ const DEFAULT_HEADERS = {
   'Sec-Fetch-Site': 'same-origin'
 };
 
+function findRarExecutable() {
+  const inPath = spawnSync('where', ['Rar.exe'], { encoding: 'utf8', shell: true });
+  if (inPath.status === 0 && inPath.stdout.trim()) return inPath.stdout.trim().split(/\r?\n/)[0];
+
+  for (const candidate of [
+    'C:\\Program Files\\WinRAR\\Rar.exe',
+    'C:\\Program Files (x86)\\WinRAR\\Rar.exe',
+  ]) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
 /**
  * Robust fetch with automatic retry on HTTP 429 rate limit
  */
@@ -29,7 +46,7 @@ async function safeFetch(url, options = {}, maxRetries = 5) {
 
       if (res.status === 429) {
         const waitTime = attempt * 5;
-        console.warn(`\n[!] Rate-limit détecté (HTTP 429). Pause de ${waitTime}s avant reprise...`);
+        console.warn(colorize(`\n[!] Rate-limit détecté (HTTP 429). Pause de ${waitTime}s avant reprise...`, 'yellow'));
         await new Promise(r => setTimeout(r, waitTime * 1000));
         continue;
       }
@@ -48,6 +65,15 @@ async function safeFetch(url, options = {}, maxRetries = 5) {
  * Uses automatic Inducks resolution, high-performance worker pool and in-memory compression.
  */
 export async function downloadWebComic(bookUri, outputDir, customTomeNum = null, options = {}) {
+  const archiveFormat = String(options.archiveFormat || 'cbr').toLowerCase();
+  if (!['cbr', 'cbz'].includes(archiveFormat)) {
+    throw new Error('Format invalide. Choisissez CBR ou CBZ.');
+  }
+  const rarExecutable = archiveFormat === 'cbr' ? findRarExecutable() : null;
+  if (archiveFormat === 'cbr' && !rarExecutable) {
+    throw new Error('WinRAR (Rar.exe) est requis pour créer un CBR. Choisissez CBZ ou installez WinRAR.');
+  }
+
   const targetDir = outputDir || path.resolve(os.homedir(), 'Downloads');
   if (!fs.existsSync(targetDir)) {
     fs.mkdirSync(targetDir, { recursive: true });
@@ -62,8 +88,9 @@ export async function downloadWebComic(bookUri, outputDir, customTomeNum = null,
 
   // Automatic Inducks Canonical Resolution
   const inducks = await resolveInducksPublication(rawUri, { customTomeNum });
-  const archiveFilename = inducks.archiveFilename;
-  const finalCbzPath = path.join(targetDir, archiveFilename);
+  const archiveStem = path.basename(inducks.archiveFilename, path.extname(inducks.archiveFilename));
+  const archiveFilename = `${archiveStem}.${archiveFormat}`;
+  const finalArchivePath = path.join(targetDir, archiveFilename);
 
   // Staging folder placed in OS temp dir (completely outside git) with clean naming
   const stagingName = inducks.canonicalStem || archiveFilename.replace(/\.cbz$/i, '');
@@ -72,9 +99,9 @@ export async function downloadWebComic(bookUri, outputDir, customTomeNum = null,
 
   console.log(`\n========================================================`);
   if (inducks.isCertified) {
-    console.log(`  [OK] Inducks  : ${inducks.matchedPublication.title} (${inducks.canonicalStem})`);
+    console.log(colorize(`  [OK] Inducks  : ${inducks.matchedPublication.title} (${inducks.canonicalStem})`, 'green'));
   } else {
-    console.log(`  [!] Inducks   : Non répertorié avec certitude -> Nom d'origine préservé (Zéro invention)`);
+    console.log(colorize(`  [!] Inducks   : Non répertorié avec certitude -> Nom d'origine préservé (Zéro invention)`, 'yellow'));
   }
   console.log(`  Archive Cible : ${archiveFilename}`);
   console.log(`  Destination   : ${targetDir}`);
@@ -90,20 +117,38 @@ export async function downloadWebComic(bookUri, outputDir, customTomeNum = null,
       headers: { 'Accept': 'application/json, text/javascript, */*; q=0.01' }
     });
 
-    const json = await res.json();
-    if (json.status !== 'success' || !json.urls) {
-      throw new Error(`Comic pages API returned error for URI: ${rawUri}`);
+    const responseText = await res.text();
+    const jsonStart = responseText.search(/\{\s*"status"\s*:/);
+    if (jsonStart < 0) {
+      if (/no space left on device|errno\s*=\s*28/i.test(responseText)) {
+        throw new Error('Le serveur ComicMafia est saturé (espace disque insuffisant). Réessayez plus tard.');
+      }
+      throw new Error(`Réponse illisible de l’API ComicMafia pour ${rawUri}.`);
     }
 
-    const pageKeys = Object.keys(json.urls).sort((a, b) => parseInt(a, 10) - parseInt(b, 10));
+    let json;
+    try {
+      json = JSON.parse(responseText.slice(jsonStart));
+    } catch {
+      throw new Error(`Réponse JSON invalide de l’API ComicMafia pour ${rawUri}.`);
+    }
+    if (json.status !== 'success' || !json.urls) {
+      if (/no space left on device|errno\s*=\s*28/i.test(responseText) || /CP-100003/i.test(json.message || '')) {
+        throw new Error('Le serveur ComicMafia est saturé (espace disque insuffisant). Réessayez plus tard.');
+      }
+      throw new Error(`API ComicMafia : ${json.message || `erreur pour ${rawUri}`}`);
+    }
+
+    const pageKeys = orderPageKeysByInducks(Object.keys(json.urls), inducks.issueEntries);
     const totalPages = pageKeys.length;
-    console.log(`[+] Total pages à télécharger : ${totalPages}`);
+    console.log(colorize(`[+] Total pages à télécharger : ${totalPages}`, 'cyan'));
 
     // High-performance worker pool concurrency (8-10 concurrent downloads)
     const CONCURRENCY = options.concurrency || 8;
     const pageBuffers = new Map();
     let downloadedCount = 0;
     let nextIndex = 0;
+    const startTime = Date.now();
 
     async function worker() {
       while (nextIndex < totalPages) {
@@ -123,7 +168,7 @@ export async function downloadWebComic(bookUri, outputDir, customTomeNum = null,
         const percent = Math.round((downloadedCount / totalPages) * 100);
         const elapsedSec = Math.max(0.1, (Date.now() - startTime) / 1000);
         const pagesPerSec = (downloadedCount / elapsedSec).toFixed(1);
-        process.stdout.write(`\r[*] Progression : ${downloadedCount}/${totalPages} pages (${percent}%) - ${pagesPerSec} p/s`);
+        process.stdout.write(colorize(`\r[*] Progression : ${downloadedCount}/${totalPages} pages (${percent}%) - ${pagesPerSec} p/s`, 'cyan'));
       }
     }
 
@@ -131,25 +176,46 @@ export async function downloadWebComic(bookUri, outputDir, customTomeNum = null,
     await Promise.all(workers);
 
     const downloadDuration = ((Date.now() - startTime) / 1000).toFixed(1);
-    console.log(`\n[+] Téléchargement terminé en ${downloadDuration}s (${(totalPages / downloadDuration).toFixed(1)} pages/sec).`);
-    console.log(`[*] Empaquetage direct dans l'archive CBZ : ${archiveFilename}...`);
+    console.log(colorize(`\n[+] Téléchargement terminé en ${downloadDuration}s (${(totalPages / downloadDuration).toFixed(1)} pages/sec).`, 'green'));
+    console.log(colorize(`[*] Empaquetage direct dans l'archive ${archiveFormat.toUpperCase()} : ${archiveFilename}...`, 'cyan'));
 
-    const zip = new AdmZip();
-    for (let p = 1; p <= totalPages; p++) {
-      const entryName = `de_LTBUP_${tomeNum}_${p}.jpg`;
-      const buffer = pageBuffers.get(p);
-      if (buffer) {
-        zip.addFile(entryName, buffer);
+    if (archiveFormat === 'cbz') {
+      const zip = new AdmZip();
+      for (let p = 1; p <= totalPages; p++) {
+        const entryName = `${inducks.imagePrefix}${p}.jpg`;
+        const buffer = pageBuffers.get(p);
+        if (buffer) zip.addFile(entryName, buffer);
       }
+      zip.writeZip(finalArchivePath);
+    } else {
+      const rarPages = [];
+      for (let p = 1; p <= totalPages; p++) {
+        const entryName = `${inducks.imagePrefix}${p}.jpg`;
+        const buffer = pageBuffers.get(p);
+        if (!buffer) continue;
+        fs.writeFileSync(path.join(tempFolder, entryName), buffer);
+        rarPages.push(entryName);
+      }
+
+      fs.writeFileSync(path.join(tempFolder, 'pages.txt'), rarPages.join('\r\n'));
+      const tempArchivePath = path.join(tempFolder, archiveFilename);
+      const rarResult = spawnSync(
+        rarExecutable,
+        ['a', '-m0', '-ep', '-idq', tempArchivePath, '@pages.txt'],
+        { cwd: tempFolder, encoding: 'utf8' },
+      );
+      if (rarResult.error || rarResult.status !== 0 || !fs.existsSync(tempArchivePath)) {
+        throw new Error(`Échec de création CBR avec WinRAR : ${(rarResult.stderr || rarResult.stdout || rarResult.error?.message || `code ${rarResult.status}`).trim()}`);
+      }
+      fs.copyFileSync(tempArchivePath, finalArchivePath);
     }
 
-    zip.writeZip(finalCbzPath);
-
-    const stats = fs.statSync(finalCbzPath);
+    const stats = fs.statSync(finalArchivePath);
     const sizeMb = (stats.size / (1024 * 1024)).toFixed(1);
     const totalDuration = ((Date.now() - startTime) / 1000).toFixed(1);
-    console.log(`[+] SUCCÈS ! Archive prête : ${finalCbzPath} (${sizeMb} Mo en ${totalDuration}s)\n`);
-    return finalCbzPath;
+    await registerArchivedComicSafely(finalArchivePath, { inducks });
+    console.log(colorize(`[+] SUCCÈS ! Archive prête : ${finalArchivePath} (${sizeMb} Mo en ${totalDuration}s)\n`, 'green'));
+    return finalArchivePath;
 
   } finally {
     // Guaranteed cleanup of temp folder

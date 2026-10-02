@@ -102,6 +102,17 @@ function Convert-CbrToCbz {
         $cbzStat = Get-Item -LiteralPath $cbzPath
         Write-Host ("[SUCCESS] Created: {0} ({1:N2} MB)" -f $cbzPath, ($cbzStat.Length / 1MB)) -ForegroundColor Green
 
+        $node = Get-Command node -ErrorAction SilentlyContinue
+        $collectionScript = Join-Path $PSScriptRoot '..\src\pipelines\4_inducks_collection\collection.mjs'
+        if ($node -and (Test-Path -LiteralPath $collectionScript)) {
+            & $node.Source $collectionScript $cbzPath
+            if ($LASTEXITCODE -ne 0) {
+                Write-Warning "Archive created, but collection update failed for $cbzPath."
+            }
+        } else {
+            Write-Warning 'Node.js or the collection updater was not found; archive was created without collection update.'
+        }
+
         if ($DeleteOriginal) {
             Remove-Item -LiteralPath $cbrFile.FullName -Force
             Write-Host "  [CLEANUP] Deleted original CBR file." -ForegroundColor Gray

@@ -63,6 +63,15 @@ convert_cbr() {
     rm -rf "$tmpdir"
 
     echo "[SUCCESS] Created: $cbz"
+    local script_dir
+    script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+    local collection_script="$script_dir/../src/pipelines/4_inducks_collection/collection.mjs"
+    if command -v node >/dev/null 2>&1 && [ -f "$collection_script" ]; then
+        node "$collection_script" "$cbz" || echo "[WARN] Collection update failed for $cbz."
+    else
+        echo "[WARN] Node.js or the collection updater was not found; archive was created without collection update."
+    fi
+
     if [ "$DELETE_ORIGINAL" = true ]; then
         rm "$cbr"
         echo "  [CLEANUP] Deleted original CBR."

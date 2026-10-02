@@ -6,6 +6,7 @@ import { execSync } from 'child_process';
 import { cleanJpegLossless } from './formats/jpeg.mjs';
 import { naturalSort } from './sorter.mjs';
 import { resolveInducksPublication } from './inducks/inducks.mjs';
+import { registerArchivedComicSafely } from '../pipelines/4_inducks_collection/collection.mjs';
 
 /**
  * Extracts the real standardized name directly from internal image filenames
@@ -17,34 +18,11 @@ export function extractRealNameFromImages(imageNames, defaultName) {
                   name.match(/^([a-zA-Z0-9_-]+)_[0-9]+\.(?:jpe?g|png|webp)$/i);
     if (match && match[1]) {
       if (!/^(page|image|img|scan|p)$/i.test(match[1])) {
-/**
- * Compares an existing archive with a candidate to download / pack.
- * Returns: { action: 'skip' | 'replace' | 'new', reason: string, existingSize: number }
- */
-export function compareArchiveCandidate(targetFilePath, candidateSizeEstimate = null) {
-  if (!fs.existsSync(targetFilePath)) {
-    return { action: 'new', reason: 'Fichier non existant, nouvel archivage.' };
-  }
-
-  const stat = fs.statSync(targetFilePath);
-  const existingSizeMb = (stat.size / (1024 * 1024)).toFixed(1);
-
-  if (candidateSizeEstimate != null) {
-    const candidateMb = (candidateSizeEstimate / (1024 * 1024)).toFixed(1);
-    if (candidateSizeEstimate > stat.size * 1.25) {
-      return {
-        action: 'replace',
-        reason: `Version HD supérieure détectée (${candidateMb} Mo vs ${existingSizeMb} Mo existants).`,
-        existingSize: stat.size
-      };
+        return match[1];
+      }
     }
   }
-
-  return {
-    action: 'skip',
-    reason: `Déjà présent dans la bibliothèque (${existingSizeMb} Mo).`,
-    existingSize: stat.size
-  };
+  return defaultName;
 }
 
 /**
@@ -167,6 +145,7 @@ export async function repairAndRepackToCbz(inputPath, outputDir = path.resolve(o
     newZip.writeZip(finalCbzPath);
     const outStat = fs.statSync(finalCbzPath);
     const sizeMb = (outStat.size / (1024 * 1024)).toFixed(1);
+    await registerArchivedComicSafely(finalCbzPath, { inducks });
     console.log(`[+] SUCCÈS ! Archive prête : ${finalCbzPath} (${sizeMb} Mo)\n`);
     return finalCbzPath;
 

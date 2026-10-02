@@ -2,17 +2,20 @@
 import readline from 'readline';
 import path from 'path';
 import fs from 'fs';
+import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
+import { colorize } from '../core/terminal.mjs';
 
 import { downloadWebComic } from '../pipelines/1_acquisition/web_comic.mjs';
 import { crawlBlogspotScans } from '../pipelines/1_acquisition/blogspot.mjs';
 import { downloadLinksFile } from '../pipelines/1_acquisition/downloader.mjs';
 import { repairAndRepackToCbz } from '../core/archive.mjs';
 import { syncInducksDatabase, resolveInducksPublication } from '../core/inducks/inducks.mjs';
+import { getCollectionDirectory } from '../pipelines/5_sheets_update/collection_csv.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const rootDir = path.resolve(__dirname, '../../..');
+const rootDir = path.resolve(__dirname, '../..');
 
 const rl = readline.createInterface({
   input: process.stdin,
@@ -20,6 +23,27 @@ const rl = readline.createInterface({
 });
 
 const ask = (query) => new Promise((resolve) => rl.question(query, resolve));
+
+async function askArchiveFormat() {
+  const selection = (await ask('Format [CBR/CBZ, défaut CBR] : ')).trim().toLowerCase();
+  return selection === 'cbz' ? 'cbz' : 'cbr';
+}
+
+function getTelegramAuditReportPath() {
+  const envFilePath = path.join(rootDir, 'download-files', '.env');
+  let configuredTarget = process.env.TARGET_ARCHIVE_PATH;
+
+  if (!configuredTarget && fs.existsSync(envFilePath)) {
+    const targetSetting = fs.readFileSync(envFilePath, 'utf8')
+      .split(/\r?\n/)
+      .map(line => line.trim())
+      .find(line => line.startsWith('TARGET_ARCHIVE_PATH='));
+    if (targetSetting) configuredTarget = targetSetting.slice(targetSetting.indexOf('=') + 1).trim();
+  }
+
+  const targetRoot = configuredTarget || String.raw`D:\Duckburg Archives\Disney comics`;
+  return path.join(path.dirname(path.resolve(targetRoot)), 'audit_skipped_files.csv');
+}
 
 function clearScreen() {
   process.stdout.write('\x1Bc');
@@ -33,30 +57,33 @@ async function showMainMenu() {
   📦 ARCHIVING HELPER - SUITE D'AUTOMATISATION & ARCHIVAGE DE BDS
 ======================================================================
 
-  [1] 🌐 Télécharger un tome depuis un lecteur Web (ComicMafia HD -> CBZ)
+  [1] 🌐 Télécharger un tome depuis un lecteur Web (CBR par défaut, CBZ au choix)
   [2] 📁 Télécharger les liens depuis files.txt (Multi-sources & aria2c)
   [3] 🔍 Scanner / Scraper des scans complets depuis un Blogspot
   [4] 🛠️ Réparer / Désanonymiser une archive ou dossier (Vers CBZ Inducks)
   [5] 📚 Synchroniser / Tester la base de données Inducks (ISV)
   [6] 📱 Pipeline Telegram -> Drive (Audit & Téléchargement)
+  [7] 📄 Afficher le rapport d'audit Telegram
+  [8] 📤 Examiner les paquets Inducks en attente
   [0] 🚪 Quitter
 
 ======================================================================`);
 
-    const choice = (await ask('Votre choix [0-6] : ')).trim();
+    const choice = (await ask('Votre choix [0-8] : ')).trim();
 
     if (choice === '1') {
       clearScreen();
       console.log(`======================================================================`);
-      console.log(`  🌐 TÉLÉCHARGEMENT LECTEUR WEB (HD LOSSLESS -> CBZ)`);
+      console.log(`  🌐 TÉLÉCHARGEMENT LECTEUR WEB (HD LOSSLESS)`);
       console.log(`======================================================================\n`);
       const uri = (await ask('Collez l\'URL ou le bookUri (ex: Alben/UltimatePhantomias47.cbr) : ')).trim();
       if (uri) {
+        const archiveFormat = await askArchiveFormat();
         console.log('');
         try {
-          await downloadWebComic(uri);
+          await downloadWebComic(uri, undefined, null, { archiveFormat });
         } catch (err) {
-          console.error(`\n[!] Erreur : ${err.message}`);
+          console.error(colorize(`\n[!] Erreur : ${err.message}`, 'red'));
         }
       }
       await ask('\nAppuyez sur Entrée pour continuer...');
@@ -68,8 +95,9 @@ async function showMainMenu() {
       console.log(`======================================================================\n`);
       const filesTxtPath = path.join(rootDir, 'download-files', 'files.txt');
       if (fs.existsSync(filesTxtPath)) {
+        const archiveFormat = await askArchiveFormat();
         try {
-          await downloadLinksFile(filesTxtPath);
+          await downloadLinksFile(filesTxtPath, { archiveFormat });
         } catch (err) {
           console.error(`\n[!] Erreur : ${err.message}`);
         }
@@ -137,6 +165,54 @@ async function showMainMenu() {
       const { spawnSync } = await import('child_process');
       const pyScript = path.join(rootDir, 'download-files', 'telegram_to_drive_pipeline.py');
       spawnSync('python', [pyScript], { stdio: 'inherit' });
+      await ask('\nAppuyez sur Entrée pour continuer...');
+
+    } else if (choice === '7') {
+      clearScreen();
+      const reportPath = getTelegramAuditReportPath();
+      console.log('======================================================================');
+      console.log('  📄 RAPPORT D’AUDIT TELEGRAM');
+      console.log('======================================================================\n');
+
+      if (!fs.existsSync(reportPath)) {
+        console.log(`Rapport introuvable : ${reportPath}`);
+        console.log('Lancez d’abord le pipeline Telegram en mode audit pour le générer.');
+      } else {
+        const viewer = spawn('explorer.exe', [reportPath], { detached: true, stdio: 'ignore' });
+        viewer.on('error', (err) => console.error(`Impossible d’ouvrir le rapport : ${err.message}`));
+        viewer.unref();
+        console.log(`Rapport ouvert : ${reportPath}`);
+      }
+
+      await ask('\nAppuyez sur Entrée pour continuer...');
+
+    } else if (choice === '8') {
+      clearScreen();
+      const pendingDirectory = path.join(getCollectionDirectory(), 'inducks_upload_pending');
+      console.log('======================================================================');
+      console.log('  📤 PAQUETS INDUCKS À CONFIRMER');
+      console.log('======================================================================\n');
+
+      if (!fs.existsSync(pendingDirectory)) {
+        console.log('Aucun paquet Inducks en attente.');
+      } else {
+        const bundles = fs.readdirSync(pendingDirectory, { withFileTypes: true })
+          .filter(entry => entry.isDirectory())
+          .map(entry => entry.name);
+        if (bundles.length === 0) {
+          console.log('Aucun paquet Inducks en attente.');
+        } else {
+          for (const bundle of bundles) console.log(`  • ${bundle}`);
+          const confirmation = (await ask('\nOuvrir le dossier pour vérifier et téléverser manuellement ? (O/N) : ')).trim();
+          if (/^o(ui)?$/i.test(confirmation)) {
+            const viewer = spawn('explorer.exe', [pendingDirectory], { detached: true, stdio: 'ignore' });
+            viewer.on('error', (err) => console.error(`Impossible d’ouvrir le dossier : ${err.message}`));
+            viewer.unref();
+            console.log(`\nDossier ouvert : ${pendingDirectory}`);
+          }
+        }
+      }
+
       await ask('\nAppuyez sur Entrée pour continuer...');
 
     } else if (choice === '0') {
