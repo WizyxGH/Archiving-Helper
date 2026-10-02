@@ -49,3 +49,6 @@ Repaired_CBR/
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# Cache local de détection (interpréteur Python avec Telethon)
+.cache/

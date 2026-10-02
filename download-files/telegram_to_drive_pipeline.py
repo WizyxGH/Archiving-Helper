@@ -556,11 +556,15 @@ def main():
     parser.add_argument("--channel", type=str, help="Telegram channel username, ID, or invite link.")
     parser.add_argument("--run", action="store_true", help="Launch LIVE mode (default is simulation/audit only).")
     parser.add_argument("--purge-identical-only", action="store_true", help="Purge only Telegram messages matching identical files already on the Drive, without downloading new ones.")
+    parser.add_argument("--no-purge", action="store_true", help="In LIVE mode, download new tomes but never delete anything from Telegram. Safe first run.")
     parser.add_argument("--target-dir", type=str, help="Root folder of the target comic library.")
     parser.add_argument("--staging-dir", type=str, help="Temporary staging folder on non-C drive.")
     parser.add_argument("--limit", type=int, help="Limit number of messages to process.")
 
     args = parser.parse_args()
+
+    if args.no_purge and args.purge_identical_only:
+        parser.error("--no-purge et --purge-identical-only sont incompatibles.")
 
     overrides = {}
     if args.channel: overrides["channel_url"] = args.channel
@@ -575,7 +579,9 @@ def main():
     else:
         overrides["dry_run"] = not args.run
         if args.run:
-            overrides["delete_identical_duplicates"] = True
+            # La purge est activée par défaut, mais --no-purge permet de
+            # télécharger sans rien supprimer de Telegram.
+            overrides["delete_identical_duplicates"] = not args.no_purge
 
     config = PipelineConfig.from_env(**overrides)
     pipeline = TelegramArchivePipeline(config)

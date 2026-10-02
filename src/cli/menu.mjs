@@ -2,7 +2,7 @@
 import readline from 'readline';
 import path from 'path';
 import fs from 'fs';
-import { spawn } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { colorize } from '../core/terminal.mjs';
 
@@ -17,6 +17,74 @@ import { targetArchivePath } from '../core/config.mjs';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const rootDir = path.resolve(__dirname, '../..');
+
+/**
+ * Trouve un interpréteur Python disposant de Telethon.
+ *
+ * `python` seul ne suffit pas : quand plusieurs versions sont installées, celle
+ * du PATH est souvent la plus récente — et sans les dépendances du pipeline.
+ * Les candidats sont donc testés un par un.
+ *
+ * Le résultat est mémorisé sur disque : la détection coûte quelques centaines
+ * de millisecondes (un `python -c` par candidat), inutile de la répéter à
+ * chaque lancement du menu. PYTHON_FOR_TELEGRAM force un interpréteur et court-
+ * circuite toute détection.
+ */
+function pythonCandidates() {
+  if (process.env.PYTHON_FOR_TELEGRAM) {
+    return [{ command: process.env.PYTHON_FOR_TELEGRAM, args: [] }];
+  }
+
+  const cached = readCachedPython();
+  if (cached) return [cached];
+
+  const localAppData = process.env.LOCALAPPDATA || '';
+  return [
+    { command: 'python', args: [] },
+    { command: 'py', args: ['-3'] },
+    localAppData && {
+      command: path.join(localAppData, 'Programs', 'Python', 'Python312', 'python.exe'),
+      args: [],
+    },
+  ].filter(Boolean);
+}
+
+function readCachedPython() {
+  const cacheFile = path.join(rootDir, '.cache', 'python-for-telegram.json');
+  try {
+    const cached = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
+    if (cached?.command && canImportTelethon(cached)) return cached;
+  } catch {
+    // pas de cache, ou cache illisible : on repart de la détection
+  }
+  return null;
+}
+
+function writeCachedPython(candidate) {
+  const cacheFile = path.join(rootDir, '.cache', 'python-for-telegram.json');
+  try {
+    fs.mkdirSync(path.dirname(cacheFile), { recursive: true });
+    fs.writeFileSync(cacheFile, JSON.stringify(candidate), 'utf8');
+  } catch {
+    // Un cache non écrit ne bloque rien : on retentera au prochain lancement.
+  }
+}
+
+function canImportTelethon({ command, args }) {
+  const probe = spawnSync(command, [...args, '-c', 'import telethon'], { stdio: 'ignore' });
+  return probe.status === 0;
+}
+
+/** Renvoie l'interpréteur à utiliser ({command, args}) ou null. */
+function resolvePython() {
+  for (const candidate of pythonCandidates()) {
+    if (canImportTelethon(candidate)) {
+      if (!process.env.PYTHON_FOR_TELEGRAM) writeCachedPython(candidate);
+      return candidate;
+    }
+  }
+  return null;
+}
 
 const rl = readline.createInterface({
   input: process.stdin,
@@ -54,14 +122,13 @@ async function showMainMenu() {
   [3] 🔍 Scanner / Scraper des scans complets depuis un Blogspot
   [4] 🛠️ Réparer / Désanonymiser une archive ou dossier (Vers CBZ Inducks)
   [5] 📚 Synchroniser / Tester la base de données Inducks (ISV)
-  [6] 📱 Pipeline Telegram -> Drive (Audit & Téléchargement)
-  [7] 📄 Afficher le rapport d'audit Telegram
-  [8] 📤 Examiner les paquets Inducks en attente
+  [6] 📱 Pipeline Telegram -> Drive (Audit, Écriture, Rapport)
+  [7] 📤 Examiner les paquets Inducks en attente
   [0] 🚪 Quitter
 
 ======================================================================`);
 
-    const choice = (await ask('Votre choix [0-8] : ')).trim();
+    const choice = (await ask('Votre choix [0-7] : ')).trim();
 
     if (choice === '1') {
       clearScreen();
@@ -152,33 +219,93 @@ async function showMainMenu() {
       console.log(`======================================================================`);
       console.log(`  📱 PIPELINE TELEGRAM -> DRIVE`);
       console.log(`======================================================================\n`);
-      console.log('Lancement du script Telegram Pipeline...');
-      // Executing telegram pipeline
-      const { spawnSync } = await import('child_process');
+
+      // Le script démarre en audit par défaut : sans option, il n'écrit rien.
+      // L'utilisateur choisit donc explicitement ce qu'il autorise.
+      const mode = (await ask(
+        '  [1] 🔎 Mode AUDIT & SIMULATION\n' +
+        '      (Compare avec le Drive, génère le rapport CSV, ne télécharge rien)\n\n' +
+        '  [2] ⚡ Mode ÉCRITURE + PURGE\n' +
+        '      (Télécharge les nouveaux tomes ET supprime de Telegram les doublons identiques)\n\n' +
+        '  [3] ⚡ Mode ÉCRITURE SEULE (sans purge)\n' +
+        '      (Télécharge les nouveaux tomes, ne supprime rien sur Telegram)\n\n' +
+        '  [4] 📄 Ouvrir le rapport d\'audit\n' +
+        '      (Ouvre le CSV généré par un audit précédent)\n\n' +
+        '  [0] Retour\n\n' +
+        '  Votre choix [0-4] : '
+      )).trim();
+
+      if (mode === '0' || mode === '') continue;
+
+      if (mode === '4') {
+        const reportPath = getTelegramAuditReportPath();
+        if (!fs.existsSync(reportPath)) {
+          console.log(`\n  Rapport introuvable : ${reportPath}`);
+          console.log('  Lancez d\'abord le mode AUDIT (option 1) pour le générer.\n');
+        } else {
+          const viewer = spawn('explorer.exe', [reportPath], { detached: true, stdio: 'ignore' });
+          viewer.on('error', (err) => console.error(`  Impossible d'ouvrir le rapport : ${err.message}`));
+          viewer.unref();
+          console.log(`\n  Rapport ouvert : ${reportPath}\n`);
+        }
+        await ask('\nAppuyez sur Entrée pour continuer...');
+        continue;
+      }
+
+      const runArguments = [];
+      let warning = '';
+      if (mode === '2') {
+        warning =
+          '\n  [!] Ce mode SUPPRIME de Telegram chaque tome déjà présent sur le\n' +
+          '      disque avec une taille identique au byte près.\n' +
+          '      Assurez-vous que la synchronisation est à jour.\n';
+      } else if (mode === '3') {
+        runArguments.push('--no-purge');
+      } else if (mode !== '1') {
+        console.log('  Choix non reconnu, retour au menu.');
+        continue;
+      }
+
+      if (mode !== '1') {
+        console.log(warning);
+        const limitAnswer = (await ask(
+          '  Limiter à combien de messages ? (vide = tous) : '
+        )).trim();
+        if (limitAnswer && /^\d+$/.test(limitAnswer)) {
+          runArguments.push('--limit', limitAnswer);
+        }
+        if (!runArguments.includes('--limit')) {
+          console.log('\n  [!] Mode ÉCRITURE : cela peut Concerner des milliers de fichiers.');
+        }
+
+        const confirm = (await ask(
+          '\n  Tapez OUI pour lancer : '
+        )).trim();
+        if (confirm.toUpperCase() !== 'OUI') {
+          console.log('  Annulé.\n');
+          continue;
+        }
+        runArguments.push('--run');
+      } else {
+        console.log('  Lancement de l\'audit...\n');
+      }
+
+      const python = resolvePython();
+      if (!python) {
+        console.log('  [!] Aucun Python avec Telethon n\'a été trouvé.');
+        console.log('      Installez les dépendances :');
+        console.log('        pip install telethon');
+        console.log('      Ou indiquez un interpréteur précis :');
+        console.log('        set PYTHON_FOR_TELEGRAM=C:\\chemin\\vers\\python.exe');
+        await ask('\nAppuyez sur Entrée pour continuer...');
+        continue;
+      }
+
       const pyScript = path.join(rootDir, 'download-files', 'telegram_to_drive_pipeline.py');
-      spawnSync('python', [pyScript], { stdio: 'inherit' });
+      spawnSync(python.command, [...python.args, pyScript, ...runArguments], { stdio: 'inherit' });
       await ask('\nAppuyez sur Entrée pour continuer...');
 
     } else if (choice === '7') {
-      clearScreen();
-      const reportPath = getTelegramAuditReportPath();
-      console.log('======================================================================');
-      console.log('  📄 RAPPORT D’AUDIT TELEGRAM');
-      console.log('======================================================================\n');
-
-      if (!fs.existsSync(reportPath)) {
-        console.log(`Rapport introuvable : ${reportPath}`);
-        console.log('Lancez d’abord le pipeline Telegram en mode audit pour le générer.');
-      } else {
-        const viewer = spawn('explorer.exe', [reportPath], { detached: true, stdio: 'ignore' });
-        viewer.on('error', (err) => console.error(`Impossible d’ouvrir le rapport : ${err.message}`));
-        viewer.unref();
-        console.log(`Rapport ouvert : ${reportPath}`);
-      }
-
-      await ask('\nAppuyez sur Entrée pour continuer...');
-
-    } else if (choice === '8') {
       clearScreen();
       const pendingDirectory = path.join(getCollectionDirectory(), 'inducks_upload_pending');
       console.log('======================================================================');
