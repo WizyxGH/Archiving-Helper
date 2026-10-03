@@ -3,6 +3,14 @@
 *.env
 .env.local
 .env.*.local
+# Sauvegardes de .env : mêmes secrets, et '.env*' ne les couvre pas car le nom
+# ne se termine pas par « .env ». Sans ces lignes, un .env.bak committé expose
+# TELEGRAM_API_HASH.
+.env.bak
+.env.backup
+.env-*
+*.env.bak
+*.env.backup
 
 # Telegram Sessions
 *.session

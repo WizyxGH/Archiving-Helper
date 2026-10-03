@@ -294,7 +294,10 @@ def report_progress(progress: str, current: int, total: int) -> None:
         return
 
     percent = int(current * 100 / total)
-    step = max(percent // step_pct, 1)
+    # On force l'affichage a 0 % et a chaque palier atteint. Le max(..., 1)
+    # d'origine divisait par 1 en dessous du premier palier, donc la ligne
+    # etait reecrite a chaque pourcent sur le premier quart du telechargement.
+    step = percent // step_pct
 
     key = (progress, step)
     if key == _last_progress["key"]:
