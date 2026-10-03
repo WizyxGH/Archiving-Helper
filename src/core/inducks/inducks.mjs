@@ -31,7 +31,15 @@ export const COUNTRY_NAMES = {
   'pl': 'Poland',
   'tr': 'Turkey',
   'id': 'Indonesia',
-  'uk': 'United Kingdom'
+  'uk': 'United Kingdom',
+  'bg': 'Bulgaria',
+  'ca': 'Canada',
+  'ch': 'Switzerland',
+  'cl': 'Chile',
+  'co': 'Colombia',
+  'mk': 'North Macedonia',
+  'vn': 'Vietnam',
+  'yu': 'Yugoslavia',
 };
 
 const BUILTIN_PUBLICATIONS = [
