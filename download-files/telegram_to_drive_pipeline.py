@@ -495,9 +495,18 @@ class InducksCatalog:
                 m = re.match(r"^([a-z]{2,3})_([A-Za-z0-9]+)_.*", entry.name, re.I)
                 if m:
                     key = f"{m.group(1).lower()}_{m.group(2).upper()}"
-                    rel_parent = entry.parent.relative_to(self.root_dir)
+                    # On ne memorise QUE le dossier de publication, jamais le
+                    # prefixe pays trouve sur le disque. Memoriser le chemin
+                    # complet perpetuait un dossier residuel (CA/ au lieu de
+                    # Canada/) : resolve_destination le privilegiait alors a la
+                    # resolution Inducks et tous les tomes suivants y allaient.
+                    country = m.group(1).lower()
+                    country_name = sanitize_folder_name(
+                        DEFAULT_COUNTRY_MAP.get(country, country.upper())
+                    )
+                    publication = sanitize_folder_name(entry.parent.name)
                     if key not in self.code_to_folder:
-                        self.code_to_folder[key] = rel_parent
+                        self.code_to_folder[key] = Path(country_name) / publication
 
                 count += 1
             except Exception:
