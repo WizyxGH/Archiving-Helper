@@ -188,6 +188,11 @@ class PipelineConfig:
     session_name: str = "telegram_scanner.session"
     delete_identical_duplicates: bool = True
     purge_identical_only: bool = False
+    # Palier de rafraîchissement de la barre de progression, en pourcentage.
+    # Telegram émet plusieurs blocs par seconde : sans regroupement la ligne est
+    # réécrite des centaines de fois et le défilement devient illisible.
+    # 5 % est un bon compromis ; 0 désactive complètement la barre.
+    progress_step_pct: int = 5
 
     @classmethod
     def from_env(cls, env_path: Optional[Path] = None, **overrides) -> "PipelineConfig":
@@ -214,6 +219,21 @@ class PipelineConfig:
 
         audit_file = target_root.parent / "audit_skipped_files.csv"
 
+        # Palier de progression : .env > variable d'environnement > défaut 5.
+        # Une valeur invalide ou négative retombe sur le défaut plutôt que de
+        # planter le pipeline au démarrage.
+        progress_raw = (
+            overrides.get("progress_step_pct")
+            or os.getenv("PROGRESS_STEP_PCT")
+            or env_vars.get("PROGRESS_STEP_PCT")
+        )
+        try:
+            progress_step_pct = int(str(progress_raw))
+            if progress_step_pct < 0:
+                progress_step_pct = 5
+        except (TypeError, ValueError):
+            progress_step_pct = 5
+
         return cls(
             target_root=target_root,
             staging_dir=staging_dir,
@@ -224,7 +244,8 @@ class PipelineConfig:
             dry_run=overrides.get("dry_run", True),
             limit=overrides.get("limit"),
             delete_identical_duplicates=overrides.get("delete_identical_duplicates", True),
-            purge_identical_only=overrides.get("purge_identical_only", False)
+            purge_identical_only=overrides.get("purge_identical_only", False),
+            progress_step_pct=progress_step_pct
         )
 
 # ==============================================================================
@@ -251,17 +272,29 @@ def format_size(bytes_val: int) -> str:
 _last_progress = {"key": None, "value": -1}
 
 
+def set_progress_step(pct: int) -> None:
+    """Fixe le palier de rafraîchissement de la barre (0 = désactivée)."""
+    _last_progress["step"] = max(int(pct), 0)
+    _last_progress["key"] = None
+
+
 def report_progress(progress: str, current: int, total: int) -> None:
-    """Affiche l'avancement du téléchargement, environ toutes les 5 %.
+    """Affiche l'avancement du téléchargement, une fois par palier de %.
 
     Sans cela, un tome de 30 Mo peut laisser l'écran muet plusieurs minutes
-    et donner l'impression que le script est bloqué.
+    et donner l'impression que le script est bloqué. Le palier vient de la
+    configuration (PROGRESS_STEP_PCT, défaut 5 %) : au-delà, la ligne est
+    réécrite trop souvent et le défilement devient illisible.
     """
+    step_pct = _last_progress.get("step", 5)
+    if step_pct == 0:
+        return
+
     if not total:
         return
 
     percent = int(current * 100 / total)
-    step = max(percent // 5, 1)
+    step = max(percent // step_pct, 1)
 
     key = (progress, step)
     if key == _last_progress["key"]:
@@ -839,6 +872,7 @@ def main():
             overrides["delete_identical_duplicates"] = not args.no_purge
 
     config = PipelineConfig.from_env(**overrides)
+    set_progress_step(config.progress_step_pct)
     pipeline = TelegramArchivePipeline(config)
     asyncio.run(pipeline.run())
 
