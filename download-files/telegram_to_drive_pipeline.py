@@ -396,11 +396,18 @@ class InducksCatalog:
 
         repo_root = Path(__file__).resolve().parents[1]
         try:
+            # encoding explicite : la console Windows est en cp1252, alors que
+            # les titres Inducks sortent en UTF-8. Sans cela, Node titrait
+            # UnicodeDecodeError, stdout restait None, et le catalogue entier
+            # tombait en repli « code de publication » : les dossiers retrouvaient
+            # leur nom abrege.
             result = subprocess.run(
                 [node, "-e", script],
                 cwd=str(repo_root),
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=60,
             )
             if result.returncode != 0 or not result.stdout.strip():
@@ -732,10 +739,13 @@ class TelegramArchivePipeline:
                 collection_script = Path(__file__).resolve().parents[1] / "src" / "pipelines" / "4_inducks_collection" / "collection.mjs"
                 if not node_executable or not collection_script.exists():
                     raise RuntimeError("Mise à jour de collection indisponible : Node.js ou le module Inducks manque.")
+                # meme encodage que pour le catalogue (voir _load_publication_titles)
                 collection_result = subprocess.run(
                     [node_executable, str(collection_script), str(final_cbr_path)],
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     check=False,
                 )
                 if collection_result.stdout:
