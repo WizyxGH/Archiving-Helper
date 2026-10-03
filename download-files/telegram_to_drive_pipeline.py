@@ -115,9 +115,20 @@ def failure(value: str) -> str:
 def warn(value: str) -> str:
     return colorize(value, "yellow")
 
-# Ensure unbuffered output on Windows consoles
-if hasattr(sys.stdout, 'reconfigure'):
-    sys.stdout.reconfigure(line_buffering=True)
+# Sortie console : line_buffering pour voir les lignes au fur et a mesure,
+# encoding explicite sinon Python se cale sur la page de codes de la console
+# (cp1252 sur un Windows FR) et re-encode les accents en "Ã©".
+# UTF-8 sans BOM : la console est en chcp 65001, impose par le lanceur.
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", line_buffering=True)
+    except (ValueError, OSError):
+        pass  # stdout redirige ou terminal sans encodage : on laisse tel quel
+if hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", line_buffering=True)
+    except (ValueError, OSError):
+        pass
 
 try:
     from telethon import TelegramClient

@@ -328,7 +328,14 @@ async function showMainMenu() {
       }
 
       const pyScript = path.join(rootDir, 'download-files', 'telegram_to_drive_pipeline.py');
-      spawnSync(python.command, [...python.args, pyScript, ...runArguments], { stdio: 'inherit' });
+      // PYTHONIOENCODING force l'UTF-8 des le demarrage : sans lui, Python
+      // lit la page de codes de la console (cp1252 en Windows FR) et renvoie
+      // les accents encodes en "A-circumflex-e". Renforce le reconfigure() du
+      // script, qui ne suffit pas quand la sortie est heritee telle quelle.
+      spawnSync(python.command, [...python.args, pyScript, ...runArguments], {
+        stdio: 'inherit',
+        env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
+      });
       await ask('\nAppuyez sur Entrée pour continuer...');
 
     } else if (choice === '7') {
