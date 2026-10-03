@@ -99,10 +99,13 @@ export async function registerArchivedComicSafely(archivePath, options = {}) {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === __filename && process.argv[2]) {
-  registerArchivedComic(process.argv[2])
-    .then((result) => console.log(JSON.stringify({ csvPath: result.csvPath, uploadBundle: result.uploadBundle?.path || null })))
-    .catch((error) => {
-      console.error(colorize(`[!] ${error.message}`, 'red'));
+  // Mode ligne de commande : le script est appele en sous-processus par le
+  // pipeline Telegram, qui reprend stdout pour l'afficher. registerArchivedComic
+  // journalise deja le resultat ("Archive classé", "Collection CSV actualisé") ;
+  //serializer le meme resultat en JSON ajoutait une ligne parasite illisible.
+  // Un code de sortie suffit a signaler l'echec, le try/catch le fait.
+  registerArchivedComic(process.argv[2]).catch((error) => {
+    console.error(colorize(`[!] ${error.message}`, 'red'));
       process.exitCode = 1;
     });
 }
