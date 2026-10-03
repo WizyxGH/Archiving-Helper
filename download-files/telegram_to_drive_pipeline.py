@@ -493,7 +493,7 @@ class InducksCatalog:
         # pour Windows. Avant, on utilisait le code (Canada/BDD), ce qui
         # dispersait une publication sur deux chemins selon le tome traite.
         country_name = DEFAULT_COUNTRY_MAP.get(country_code, country_code.upper())
-        publication_title = self.catalog.publication_titles.get(key)
+        publication_title = self.publication_titles.get(key)   # self EST le catalogue
 
         if not publication_title:
             # Publication inconnue d'Inducks : le code reste le seul repere.
