@@ -1,9 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const rootDir = path.resolve(__dirname, '../../..');
+import { collectionDirectory } from '../../core/config.mjs';
 
 const COLUMNS = [
   'canonical_stem',
@@ -22,9 +19,7 @@ const COLUMNS = [
 ];
 
 export function getCollectionDirectory() {
-  return path.resolve(
-    process.env.INDUCKS_COLLECTION_DIR || path.join(rootDir, 'download-files', 'files_downloads')
-  );
+  return collectionDirectory();
 }
 
 function csvField(value) {
@@ -41,9 +36,30 @@ export function serializeCollectionCsv(records) {
 }
 
 export function updateCollectionCsv(record, collectionDirectory = getCollectionDirectory()) {
+  const registry = loadRegistry(collectionDirectory);
+  registry[record.collection_key] = record;
+  return saveRegistry(registry, collectionDirectory);
+}
+
+/** Retire les lignes dont `predicate(record)` est vrai ; retourne leur nombre. */
+export function removeCollectionRecords(predicate, collectionDirectory = getCollectionDirectory()) {
+  const registry = loadRegistry(collectionDirectory);
+  const keys = Object.keys(registry).filter((key) => predicate(registry[key]));
+  for (const key of keys) delete registry[key];
+  if (keys.length) saveRegistry(registry, collectionDirectory);
+  return keys.length;
+}
+
+function registryPaths(collectionDirectory) {
+  return {
+    registryPath: path.join(collectionDirectory, '.inducks_collection.json'),
+    csvPath: path.join(collectionDirectory, 'inducks_collection.csv'),
+  };
+}
+
+function loadRegistry(collectionDirectory) {
   fs.mkdirSync(collectionDirectory, { recursive: true });
-  const registryPath = path.join(collectionDirectory, '.inducks_collection.json');
-  const csvPath = path.join(collectionDirectory, 'inducks_collection.csv');
+  const { registryPath } = registryPaths(collectionDirectory);
 
   let registry = {};
   if (fs.existsSync(registryPath)) {
@@ -52,8 +68,11 @@ export function updateCollectionCsv(record, collectionDirectory = getCollectionD
       throw new Error(`Invalid collection registry: ${registryPath}`);
     }
   }
+  return registry;
+}
 
-  registry[record.collection_key] = record;
+function saveRegistry(registry, collectionDirectory) {
+  const { registryPath, csvPath } = registryPaths(collectionDirectory);
   const records = Object.values(registry).sort((left, right) =>
     String(left.canonical_stem).localeCompare(String(right.canonical_stem), 'en', { numeric: true }) ||
     String(left.format).localeCompare(String(right.format))

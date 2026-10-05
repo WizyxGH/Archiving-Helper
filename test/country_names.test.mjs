@@ -20,39 +20,106 @@ const rootDir = path.resolve(__dirname, '..');
 
 const JS_TABLES = [
   'src/core/inducks/inducks.mjs',
-  'download-files/src/inducks.mjs',
 ];
+
+// Ancienne copie du module : elle doit rester un simple renvoi. Une seconde
+// table de pays finirait par diverger, comme celle qui recréait CA/EG/LU.
+const LEGACY_REEXPORT = 'download-files/src/inducks.mjs';
 
 const PYTHON_MAP = 'download-files/telegram_to_drive_pipeline.py';
 
-/** Codes ISO qu'Inducks utilise et qui doivent tous avoir un dossier nomme. */
+/**
+ * Codes ISO qu'Inducks utilise et qui doivent tous avoir un dossier nommé.
+ *
+ * La liste complète vient d'inducks_country (84 pays) et non d'une saisie à la
+ * main : celle-ci avait dérivé à 25, ce qui faisait retomber les autres sur leur
+ * code en majuscules (EG, LU). Voir scripts/gen-country-names.py.
+ */
 const EXPECTED_COUNTRY_DIRS = {
+  ae: 'United Arab Emirates',
+  al: 'Albania',
+  an: 'Netherlands Antilles',
+  ar: 'Argentina',
+  at: 'Austria',
+  au: 'Australia',
+  bb: 'Barbados',
   be: 'Belgium',
   bg: 'Bulgaria',
   br: 'Brazil',
+  by: 'Belarus',
   ca: 'Canada',
   ch: 'Switzerland',
   cl: 'Chile',
+  cn: 'China',
   co: 'Colombia',
+  cu: 'Cuba',
+  cz: 'Czech Republic',
+  dc: 'Digital comics',
   de: 'Germany',
   dk: 'Denmark',
+  dz: 'Algeria',
+  ec: 'Ecuador',
+  ee: 'Estonia',
+  eg: 'Egypt',
   es: 'Spain',
   fi: 'Finland',
+  fo: 'Faroe Islands',
   fr: 'France',
   gr: 'Greece',
+  gt: 'Guatemala',
+  gy: 'Guyana',
+  hk: 'Hong Kong',
+  hn: 'Honduras',
+  hr: 'Croatia',
+  hu: 'Hungary',
   id: 'Indonesia',
+  ie: 'Ireland',
+  il: 'Israel',
+  in: 'India',
+  ir: 'Iran',
+  is: 'Iceland',
   it: 'Italy',
+  jp: 'Japan',
+  kr: 'South Korea',
+  kw: 'Kuwait',
+  lb: 'Lebanon',
+  lt: 'Lithuania',
+  lu: 'Luxembourg',
+  lv: 'Latvia',
+  ma: 'Morocco',
   mk: 'North Macedonia',
+  mn: 'Mongolia',
+  mx: 'Mexico',
+  my: 'Malaysia',
   nl: 'Netherlands',
   no: 'Norway',
+  nz: 'New Zealand',
+  pa: 'Panama',
+  pe: 'Peru',
+  ph: 'Philippines',
   pl: 'Poland',
   pt: 'Portugal',
+  ro: 'Romania',
+  rs: 'Serbia',
+  ru: 'Russia',
+  sa: 'Saudi Arabia',
   se: 'Sweden',
+  sg: 'Singapore',
+  si: 'Slovenia',
+  sk: 'Slovakia',
+  sv: 'El Salvador',
+  th: 'Thailand',
+  tn: 'Tunisia',
   tr: 'Turkey',
+  tw: 'Taiwan',
+  ua: 'Ukraine',
   uk: 'United Kingdom',
   us: 'United States',
+  uy: 'Uruguay',
+  ve: 'Venezuela',
   vn: 'Vietnam',
   yu: 'Yugoslavia',
+  za: 'South Africa',
 };
 
 function readJsTable(relativePath) {
@@ -121,6 +188,12 @@ test('les tables JS et Python restent synchronisées', () => {
       );
     }
   }
+});
+
+test(`${LEGACY_REEXPORT} renvoie vers src/core sans table propre`, () => {
+  const source = fs.readFileSync(path.join(rootDir, LEGACY_REEXPORT), 'utf8');
+  assert.match(source, /export \* from '\.\.\/\.\.\/src\/core\/inducks\/inducks\.mjs'/);
+  assert.doesNotMatch(source, /COUNTRY_NAMES\s*=/, 'seconde table de pays réintroduite');
 });
 
 test('Canada se résout en Canada, jamais en CA', () => {

@@ -130,6 +130,52 @@ if hasattr(sys.stderr, "reconfigure"):
     except (ValueError, OSError):
         pass
 
+
+def _enable_timestamped_stdout() -> None:
+    """Prefix every written line with the time, when output goes to a file.
+
+    The pipeline prints its whole progress with `print(..., flush=True)`, and a run
+    can last hours. Without a timestamp a log file cannot be correlated with a run,
+    nor a failure with the tome it belongs to — the console must stay clean, so this
+    only applies when stdout is redirected to a file rather than a terminal.
+
+    The colour codes are kept at the very end of the line so the prefix itself never
+    inherits a colour from the message it precedes.
+    """
+    if os.environ.get("PIPELINE_TIMESTAMPED_LOG") == "1":
+        pass  # forced on, even on a terminal
+    elif sys.stdout.isatty():
+        return
+    else:
+        # Only when a run is actually being captured; PIPELINE_NO_TIMESTAMP disables.
+        if os.environ.get("PIPELINE_NO_TIMESTAMP") == "1":
+            return
+
+    plain = sys.stdout
+
+    class _Timestamped:
+        def write(self, text: str) -> int:
+            if not text.strip():
+                return plain.write(text)
+            # One prefix per line: a print() may carry several.
+            now = datetime.now().strftime("%H:%M:%S")
+            plain.write("".join(f"[{now}] {line}" for line in text.splitlines(keepends=True)))
+            return len(text)
+
+        def flush(self) -> None:
+            plain.flush()
+
+        def isatty(self) -> bool:
+            return False
+
+        def __getattr__(self, name):
+            return getattr(plain, name)
+
+    sys.stdout = _Timestamped()
+
+
+_enable_timestamped_stdout()
+
 try:
     from telethon import TelegramClient
     from telethon.tl.types import DocumentAttributeFilename, Message
@@ -144,34 +190,94 @@ except ImportError:
 
 SUPPORTED_EXTENSIONS: Set[str] = {".cbr", ".cbz", ".pdf", ".zip", ".rar", ".7z"}
 
-# Canonical mapping of ISO country prefixes to official Inducks English directory names
-DEFAULT_COUNTRY_MAP: Dict[str, str] = {
-    "be": "Belgium",
-    "br": "Brazil",
-    "bg": "Bulgaria",
-    "ca": "Canada",
-    "ch": "Switzerland",
-    "cl": "Chile",
-    "co": "Colombia",
-    "de": "Germany",
-    "dk": "Denmark",
-    "es": "Spain",
-    "fi": "Finland",
-    "fr": "France",
-    "gr": "Greece",
-    "id": "Indonesia",
-    "it": "Italy",
-    "mk": "North Macedonia",
-    "nl": "Netherlands",
-    "no": "Norway",
-    "pl": "Poland",
-    "pt": "Portugal",
-    "se": "Sweden",
-    "tr": "Turkey",
-    "uk": "United Kingdom",
-    "us": "United States",
-    "vn": "Vietnam",
-    "yu": "Yugoslavia",
+# Codes pays Inducks -> nom de dossier. Généré par scripts/gen-country-names.py
+# depuis inducks_country : ne pas réduire cette liste à la main. Un code absent
+# retombe sur son code en majuscules comme nom de dossier (EG, LU).
+DEFAULT_COUNTRY_MAP = {
+  "ae": "United Arab Emirates",
+  "al": "Albania",
+  "an": "Netherlands Antilles",
+  "ar": "Argentina",
+  "at": "Austria",
+  "au": "Australia",
+  "bb": "Barbados",
+  "be": "Belgium",
+  "bg": "Bulgaria",
+  "br": "Brazil",
+  "by": "Belarus",
+  "ca": "Canada",
+  "ch": "Switzerland",
+  "cl": "Chile",
+  "cn": "China",
+  "co": "Colombia",
+  "cu": "Cuba",
+  "cz": "Czech Republic",
+  "dc": "Digital comics",
+  "de": "Germany",
+  "dk": "Denmark",
+  "dz": "Algeria",
+  "ec": "Ecuador",
+  "ee": "Estonia",
+  "eg": "Egypt",
+  "es": "Spain",
+  "fi": "Finland",
+  "fo": "Faroe Islands",
+  "fr": "France",
+  "gr": "Greece",
+  "gt": "Guatemala",
+  "gy": "Guyana",
+  "hk": "Hong Kong",
+  "hn": "Honduras",
+  "hr": "Croatia",
+  "hu": "Hungary",
+  "id": "Indonesia",
+  "ie": "Ireland",
+  "il": "Israel",
+  "in": "India",
+  "ir": "Iran",
+  "is": "Iceland",
+  "it": "Italy",
+  "jp": "Japan",
+  "kr": "South Korea",
+  "kw": "Kuwait",
+  "lb": "Lebanon",
+  "lt": "Lithuania",
+  "lu": "Luxembourg",
+  "lv": "Latvia",
+  "ma": "Morocco",
+  "mk": "North Macedonia",
+  "mn": "Mongolia",
+  "mx": "Mexico",
+  "my": "Malaysia",
+  "nl": "Netherlands",
+  "no": "Norway",
+  "nz": "New Zealand",
+  "pa": "Panama",
+  "pe": "Peru",
+  "ph": "Philippines",
+  "pl": "Poland",
+  "pt": "Portugal",
+  "ro": "Romania",
+  "rs": "Serbia",
+  "ru": "Russia",
+  "sa": "Saudi Arabia",
+  "se": "Sweden",
+  "sg": "Singapore",
+  "si": "Slovenia",
+  "sk": "Slovakia",
+  "sv": "El Salvador",
+  "th": "Thailand",
+  "tn": "Tunisia",
+  "tr": "Turkey",
+  "tw": "Taiwan",
+  "ua": "Ukraine",
+  "uk": "United Kingdom",
+  "us": "United States",
+  "uy": "Uruguay",
+  "ve": "Venezuela",
+  "vn": "Vietnam",
+  "yu": "Yugoslavia",
+  "za": "South Africa",
 }
 
 @dataclass
@@ -217,7 +323,17 @@ class PipelineConfig:
         staging_raw = overrides.get("staging_dir") or os.getenv("STAGING_PATH") or env_vars.get("STAGING_PATH") or str(target_root.parent / "_staging_temp")
         staging_dir = Path(staging_raw)
 
-        audit_file = target_root.parent / "audit_skipped_files.csv"
+        # CSV d'audit et journal des runs : rien a faire sur le disque de la
+        # bibliotheque. AUDIT_DIR, sinon le dossier de collection
+        # (INDUCKS_COLLECTION_DIR), sinon download-files/files_downloads, ou se
+        # trouve deja le CSV de collection.
+        audit_raw = (
+            overrides.get("audit_dir")
+            or os.getenv("AUDIT_DIR") or env_vars.get("AUDIT_DIR")
+            or os.getenv("INDUCKS_COLLECTION_DIR") or env_vars.get("INDUCKS_COLLECTION_DIR")
+            or str(Path(__file__).parent / "files_downloads")
+        )
+        audit_file = Path(audit_raw) / "audit_skipped_files.csv"
 
         # Palier de progression : .env > variable d'environnement > défaut 5.
         # Une valeur invalide ou négative retombe sur le défaut plutôt que de
@@ -375,6 +491,50 @@ def natural_keys(text: str):
     """Sorting key that handles human natural page order (e.g., 1, 2, ... 9, 10, 100)."""
     return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', str(text))]
 
+INDUCKS_STEM_IN_IMAGE_RE = re.compile(
+    # Le nom doit commencer a une frontiere : sans (?<!...), « page_001_2.jpg »
+    # donnait « age_001_2 » en reprenant la recherche a la lettre suivante.
+    # Le numero peut contenir des lettres (S5, 1978B) mais au moins un chiffre ;
+    # le suffixe _<page> facultatif est ensuite ignore.
+    rb"(?<![A-Za-z0-9])([a-zA-Z]{2,3}_[a-zA-Z0-9]+_[A-Za-z]*\d[A-Za-z0-9]*)(?:_\d+)?\.(?:jpe?g|png|webp)", re.I
+)
+
+# En-tete RAR/ZIP : le premier nom d'image interne (donc le code Inducks du
+# tome) se lit des les premieres centaines d'octets. Mesure sur 40 tomes de la
+# bibliotheque : offset constant a 50 octets, 40/40 identifiables avec 512 Ko.
+# On peut donc conclure « deja archive » apres 512 Ko au lieu de 30 a 780 Mo.
+HEADER_PROBE_BYTES = 512 * 1024
+
+# Noms de fichiers generiques, rejetes comme faux positifs. On compare le
+# premier segment entier : un test « commence par » avec « p » ecartait tous
+# les pays en p (pl_GM_14, pt_DEG_29), qui finissaient dans Unknown.
+_GENERIC_IMAGE_STEMS = {"page", "image", "img", "scan", "picture", "p"}
+
+
+def _is_generic_stem(candidate: str) -> bool:
+    return candidate.split("_", 1)[0].lower() in _GENERIC_IMAGE_STEMS
+
+
+def identify_inducks_stem_from_header(file_path: Path) -> Optional[str]:
+    """Lit le nom Inducks du tome dans l'en-tete, sans avoir tout le fichier.
+
+    Retourne le stem (ex. « ca_OP_4 ») ou None si l'en-tete ne suffit pas encore.
+    Utilisable sur un fichier encore en cours de telechargement : les noms
+    internes sont ecrits dans l'entete, pas dans le repertoire de fin.
+    """
+    try:
+        with open(file_path, "rb") as f:
+            head = f.read(HEADER_PROBE_BYTES)
+    except OSError:
+        return None
+
+    for match in INDUCKS_STEM_IN_IMAGE_RE.finditer(head):
+        candidate = match.group(1).decode("utf-8", errors="ignore")
+        if not _is_generic_stem(candidate):
+            return candidate
+    return None
+
+
 def inspect_archive_for_inducks_name(file_path: Path) -> Optional[str]:
     """Inspects archive contents (zip/rar) to extract the canonical Inducks stem from internal image names."""
     try:
@@ -388,14 +548,78 @@ def inspect_archive_for_inducks_name(file_path: Path) -> Optional[str]:
         # Binary scan for ZIP or RAR headers (works without unrar)
         with open(file_path, "rb") as f:
             chunk = f.read(4 * 1024 * 1024)
-            matches = re.findall(rb"([a-zA-Z]{2,3}_[a-zA-Z0-9]+_\d+)(?:_\d+)?\.(?:jpe?g|png|webp)", chunk, re.I)
-            if matches:
-                for raw_m in matches:
-                    candidate = raw_m.decode('utf-8', errors='ignore')
-                    if not candidate.lower().startswith(('page', 'image', 'img', 'scan', 'p')):
-                        return candidate
+            for match in INDUCKS_STEM_IN_IMAGE_RE.finditer(chunk):
+                candidate = match.group(1).decode('utf-8', errors='ignore')
+                if not _is_generic_stem(candidate):
+                    return candidate
     except Exception:
         pass
+    return None
+
+
+# Noms de scan deja resolus pendant ce run (stem -> resultat ou None).
+_SCAN_STEM_CACHE: Dict[str, Optional[dict]] = {}
+
+
+def resolve_scan_stem(stem: str) -> Optional[dict]:
+    """Numero Inducks officiel d'un nom de scan, ou None si incertain.
+
+    « GHL_M_2 » -> {canonicalStem: « fr_GHL_M_2 », issueCode: « fr/GHLM  2 », ...}
+
+    La logique vit cote Node (src/core/inducks/issue_index.mjs, resolveScanStem) :
+    on l'interroge plutot que de la recopier. Un echec de Node n'est pas mis en
+    cache, pour qu'un incident passager ne fige pas le resultat du run.
+    """
+    if stem in _SCAN_STEM_CACHE:
+        return _SCAN_STEM_CACHE[stem]
+
+    node = shutil.which("node")
+    script = Path(__file__).resolve().parents[1] / "src" / "core" / "inducks" / "resolve_stem.mjs"
+    if not node or not script.exists():
+        return None
+    try:
+        result = subprocess.run(
+            [node, str(script), stem],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=120,
+        )
+        if result.returncode != 0:
+            return None
+        resolved = json.loads(result.stdout).get(stem)
+    except Exception:
+        return None
+
+    _SCAN_STEM_CACHE[stem] = resolved
+    return resolved
+
+
+def official_stem(stem: str) -> str:
+    """Nom canonique Inducks du tome, ou le nom recu s'il n'est pas resolu."""
+    resolved = resolve_scan_stem(stem)
+    return resolved["canonicalStem"] if resolved else stem
+
+
+# Signature des premiers octets -> extension correspondant au contenu reel.
+_ARCHIVE_SIGNATURES = ((b"Rar!", ".cbr"), (b"PK\x03\x04", ".cbz"))
+
+
+def archive_extension_from_content(file_path: Path) -> Optional[str]:
+    """.cbr pour un RAR, .cbz pour un ZIP, None si le format est inconnu.
+
+    Telegram fournit parfois des ZIP nommes .cbr : la verification les ouvrait
+    avec Rar.exe, qui les refusait, et le tome finissait en erreur de securite.
+    """
+    try:
+        with open(file_path, "rb") as handle:
+            head = handle.read(4)
+    except OSError:
+        return None
+    for signature, extension in _ARCHIVE_SIGNATURES:
+        if head.startswith(signature):
+            return extension
     return None
 
 # ==============================================================================
@@ -414,6 +638,11 @@ class InducksCatalog:
         self.code_to_folder: Dict[str, Path] = {}
         self.files_by_name: Dict[str, dict] = {}
         self.files_by_stem: Dict[str, dict] = {}
+        # Taille en octets -> tome(s) deja archives. Mesure sur la bibliotheque
+        # actuelle : 934 tomes, 934 tailles distinctes, aucun doublon de taille.
+        # Une taille identique implique donc le meme tome, ce qui permet de
+        # conclure « deja archive » sans telecharger les 30 a 780 Mo.
+        self.files_by_size: Dict[int, dict] = {}
         self.publication_titles: Dict[str, str] = {}
         self._load_publication_titles()
         self._build_index()
@@ -490,10 +719,17 @@ class InducksCatalog:
                 self.files_by_name[name_lower] = info
                 if stem_lower not in self.files_by_stem:
                     self.files_by_stem[stem_lower] = info
+                # Un tome de meme taille qu'un tome deja archive n'est conserve
+                # que si les deux font la meme taille ET le meme stem ; sinon on
+                # n'indexe pas cette taille, pour ne pas conclure a tort.
+                if sz not in self.files_by_size:
+                    self.files_by_size[sz] = info
+                elif self.files_by_size[sz]["stem"].lower() != stem_lower:
+                    self.files_by_size[sz] = {"ambiguous": True, "size": sz}
 
                 # Extract Inducks code prefix: <country>_<pubcode>_<issue>
                 m = re.match(r"^([a-z]{2,3})_([A-Za-z0-9]+)_.*", entry.name, re.I)
-                if m:
+                if m and m.group(1).lower() in DEFAULT_COUNTRY_MAP:
                     key = f"{m.group(1).lower()}_{m.group(2).upper()}"
                     # On ne memorise QUE le dossier de publication, jamais le
                     # prefixe pays trouve sur le disque. Memoriser le chemin
@@ -524,7 +760,10 @@ class InducksCatalog:
     def resolve_destination(self, canonical_name: str) -> Path:
         """Determines target directory path based on Inducks nomenclature."""
         m = re.match(r"^([a-z]{2,3})_([A-Za-z0-9]+)_.*", canonical_name, re.I)
-        if not m:
+        # Le prefixe doit etre un vrai code pays Inducks. « GHL_M_2 » commence
+        # par un code de publication : le lire comme un pays creait un dossier
+        # « GHL ». Un nom non resolu va dans Unknown, jamais dans un pays invente.
+        if not m or m.group(1).lower() not in DEFAULT_COUNTRY_MAP:
             return self.root_dir / "Unknown"
 
         country_code = m.group(1).lower()
@@ -537,7 +776,7 @@ class InducksCatalog:
         # Le nom du dossier est le TITRE Inducks de la publication, normalise
         # pour Windows. Avant, on utilisait le code (Canada/BDD), ce qui
         # dispersait une publication sur deux chemins selon le tome traite.
-        country_name = DEFAULT_COUNTRY_MAP.get(country_code, country_code.upper())
+        country_name = DEFAULT_COUNTRY_MAP[country_code]
         publication_title = self.publication_titles.get(key)   # self EST le catalogue
 
         if not publication_title:
@@ -743,12 +982,88 @@ class TelegramArchivePipeline:
             try:
                 local_staging_file = issue_temp_dir / raw_filename
                 print(colorize(f"      {progress} Telechargement ({format_size(file_size)})...", "blue"), flush=True)
-                await message.download_media(
-                    file=str(local_staging_file),
-                    progress_callback=lambda current, total: report_progress(
-                        progress, current, total
-                    ),
-                )
+                # Arret anticipe : des les 512 Ko, l'en-tete du fichier donne le
+                # nom Inducks du tome. Si un tome de MEME TAILLE est deja
+                # archive, c'est le meme fichier : on coupe le telechargement au
+                # lieu de recevoir 30 a 780 Mo pour rien.
+                #
+                # Telethon ignore la valeur de retour du progress_callback
+                # (verifie dans client/downloads.py) : seul un lever d'exception
+                # arrete la boucle "async for chunk in _iter_download". On utilise
+                # donc une exception dediee, attrapee juste apres l'appel.
+                early_exit: Dict[str, object] = {"stem": None, "path": None, "probed": False}
+
+                def _on_progress(current: int, total: int) -> None:
+                    report_progress(progress, current, total)
+                    if early_exit["probed"]:
+                        return
+                    if current < HEADER_PROBE_BYTES or total <= 0:
+                        return
+                    if total != file_size:
+                        # taille Telegram et taille reelle differentes : on ne se
+                        # fie pas a l'index, on attend la fin du telechargement.
+                        early_exit["probed"] = True
+                        return
+                    stem = identify_inducks_stem_from_header(local_staging_file)
+                    if not stem:
+                        return
+                    # Le nom est lu : la decision est prise une fois pour toutes,
+                    # sans relire l'en-tete a chaque bloc recu.
+                    early_exit["probed"] = True
+                    known = self.catalog.files_by_size.get(file_size)
+                    if not known or known.get("ambiguous"):
+                        return
+                    # L'en-tete donne le nom du scan (« GHL_M_2 »), la
+                    # bibliotheque le nom officiel (« fr_GHL_M_2 ») : on compare
+                    # les deux formes avant de conclure.
+                    known_stem = known["stem"].lower()
+                    if known_stem != stem.lower() and known_stem != official_stem(stem).lower():
+                        return
+                    early_exit["stem"] = stem
+                    early_exit["path"] = known["path"]
+                    raise _EarlyDuplicateExit(stem, known["path"])
+
+                try:
+                    await message.download_media(
+                        file=str(local_staging_file),
+                        progress_callback=_on_progress,
+                    )
+                except _EarlyDuplicateExit:
+                    # sortie rapide normale : traitee juste apres
+                    pass
+
+                if early_exit["stem"] is not None:
+                    existing = early_exit["path"]
+                    assert isinstance(existing, Path)
+                    reset_progress_line()
+                    gained = file_size - HEADER_PROBE_BYTES
+                    print(
+                        success(
+                            f"      {progress} Interrompu a {format_size(HEADER_PROBE_BYTES)} "
+                            f"(tome deja archive, {format_size(gained)} economises)"
+                        ),
+                        flush=True,
+                    )
+                    print(
+                        warn(
+                            f"          [i] Deja present : {existing.name} "
+                            f"({format_size(file_size)}, taille identique)"
+                        ),
+                        flush=True,
+                    )
+                    print(
+                        warn(f"          [4/4] Suppression du message Telegram #{msg_id}..."),
+                        end="",
+                        flush=True,
+                    )
+                    await self.client.delete_messages(entity, msg_id)
+                    print(" OK", flush=True)
+                    stats["purged"] = stats.get("purged", 0) + 1
+                    stats["skipped"] += 1
+                    # Le fichier partiel n'a aucune valeur : on le jette.
+                    shutil.rmtree(issue_temp_dir, ignore_errors=True)
+                    continue
+
                 local_sz = local_staging_file.stat().st_size
                 reset_progress_line()
                 print(success(f"      {progress} Telecharge ({format_size(local_sz)})"), flush=True)
@@ -757,14 +1072,30 @@ class TelegramArchivePipeline:
                 detected_stem = None
                 if not re.match(r"^[a-zA-Z]{2,3}_[a-zA-Z0-9]+_\d+", raw_filename):
                     detected_stem = inspect_archive_for_inducks_name(local_staging_file)
-                    if detected_stem:
-                        canonical_name = f"{detected_stem}.cbr"
-                        target_folder = self.catalog.resolve_destination(canonical_name)
-                        final_cbr_path = target_folder / canonical_name
-                        print(colorize(f"          [*] De-anonymise -> {canonical_name}", "magenta"), flush=True)
+
+                # Nom officiel Inducks : « GHL_M_2 » (scan sans pays, numero
+                # compose) devient « fr_GHL_M_2 ». Les noms deja officiels
+                # restent inchanges ; un nom non resolu est garde tel quel et
+                # resolve_destination l'envoie dans Unknown.
+                received_stem = clean_stem(canonical_name)
+                final_stem = official_stem(detected_stem or received_stem)
+                renamed = final_stem != received_stem
+                if renamed:
+                    canonical_name = f"{final_stem}{Path(canonical_name).suffix}"
+                    target_folder = self.catalog.resolve_destination(canonical_name)
+                    final_cbr_path = target_folder / canonical_name
+                    label = "De-anonymise" if detected_stem else "Nom Inducks"
+                    print(colorize(f"          [*] {label} -> {canonical_name}", "magenta"), flush=True)
+
+                # L'extension suit le contenu, pas le nom recu de Telegram.
+                real_ext = archive_extension_from_content(local_staging_file)
+                if real_ext and Path(canonical_name).suffix.lower() != real_ext:
+                    canonical_name = f"{Path(canonical_name).stem}{real_ext}"
+                    final_cbr_path = target_folder / canonical_name
+                    print(colorize(f"          [*] Format reel -> {canonical_name}", "magenta"), flush=True)
 
                 # Check if this newly detected canonical file already exists on Drive and is identical!
-                if detected_stem:
+                if renamed:
                     post_dup = self.catalog.find_duplicate(canonical_name)
                     if post_dup and post_dup["size"] == local_sz and post_dup["path"].exists():
                         print(warn(f"          [!] Deja present sur le Drive ({format_size(post_dup['size'])}) sous son vrai nom Inducks!"), flush=True)

@@ -93,6 +93,16 @@ export const downloadFilesDir = path.join(rootDir, 'download-files');
 export const targetArchivePath = () =>
   path.resolve(config('TARGET_ARCHIVE_PATH', String.raw`D:\Duckburg Archives\Disney comics`));
 
+/** CSV de collection et paquets d'envoi Inducks (sur le poste, pas sur D:). */
+export const collectionDirectory = () =>
+  path.resolve(config('INDUCKS_COLLECTION_DIR', path.join(downloadFilesDir, 'files_downloads')));
+
+/**
+ * CSV d'audit et journal des runs Telegram. Le pipeline Python applique la
+ * même règle : AUDIT_DIR, sinon le dossier de collection.
+ */
+export const auditDirectory = () => path.resolve(config('AUDIT_DIR', collectionDirectory()));
+
 // ---------------------------------------------------------------------------
 // Données Inducks
 // ---------------------------------------------------------------------------

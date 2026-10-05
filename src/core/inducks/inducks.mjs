@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { resolveInducksIssue } from './issue_index.mjs';
+import { resolveInducksIssue, resolveScanStem, entriesForIssue } from './issue_index.mjs';
 import { config, publicationsIsvPath } from '../config.mjs';
 
 // Cache de la base de publications. INDUCKS_CACHE_DIR permet de le poser
@@ -12,34 +12,96 @@ const CACHE_DIR = path.resolve(
 const DB_FILE = path.join(CACHE_DIR, 'inducks_publications.json');
 const META_FILE = path.join(CACHE_DIR, 'inducks_sync_meta.json');
 
-// Canonical mapping of ISO country prefixes to official Inducks country names
+// Codes pays Inducks -> nom de dossier. Généré par scripts/gen-country-names.py
+// depuis inducks_country : ne pas réduire cette liste à la main. Un code absent
+// retombe sur son code en majuscules comme nom de dossier (EG, LU) — c'est ce
+// que country_names.test.mjs garde. Deux libellés diffèrent d'Inducks ('UK',
+// 'USA') volontairement.
 export const COUNTRY_NAMES = {
-  'de': 'Germany',
-  'fr': 'France',
-  'it': 'Italy',
-  'us': 'United States',
-  'nl': 'Netherlands',
-  'dk': 'Denmark',
-  'se': 'Sweden',
-  'no': 'Norway',
-  'fi': 'Finland',
-  'br': 'Brazil',
-  'es': 'Spain',
+  'ae': 'United Arab Emirates',
+  'al': 'Albania',
+  'an': 'Netherlands Antilles',
+  'ar': 'Argentina',
+  'at': 'Austria',
+  'au': 'Australia',
+  'bb': 'Barbados',
   'be': 'Belgium',
-  'gr': 'Greece',
-  'pt': 'Portugal',
-  'pl': 'Poland',
-  'tr': 'Turkey',
-  'id': 'Indonesia',
-  'uk': 'United Kingdom',
   'bg': 'Bulgaria',
+  'br': 'Brazil',
+  'by': 'Belarus',
   'ca': 'Canada',
   'ch': 'Switzerland',
   'cl': 'Chile',
+  'cn': 'China',
   'co': 'Colombia',
+  'cu': 'Cuba',
+  'cz': 'Czech Republic',
+  'dc': 'Digital comics',
+  'de': 'Germany',
+  'dk': 'Denmark',
+  'dz': 'Algeria',
+  'ec': 'Ecuador',
+  'ee': 'Estonia',
+  'eg': 'Egypt',
+  'es': 'Spain',
+  'fi': 'Finland',
+  'fo': 'Faroe Islands',
+  'fr': 'France',
+  'gr': 'Greece',
+  'gt': 'Guatemala',
+  'gy': 'Guyana',
+  'hk': 'Hong Kong',
+  'hn': 'Honduras',
+  'hr': 'Croatia',
+  'hu': 'Hungary',
+  'id': 'Indonesia',
+  'ie': 'Ireland',
+  'il': 'Israel',
+  'in': 'India',
+  'ir': 'Iran',
+  'is': 'Iceland',
+  'it': 'Italy',
+  'jp': 'Japan',
+  'kr': 'South Korea',
+  'kw': 'Kuwait',
+  'lb': 'Lebanon',
+  'lt': 'Lithuania',
+  'lu': 'Luxembourg',
+  'lv': 'Latvia',
+  'ma': 'Morocco',
   'mk': 'North Macedonia',
+  'mn': 'Mongolia',
+  'mx': 'Mexico',
+  'my': 'Malaysia',
+  'nl': 'Netherlands',
+  'no': 'Norway',
+  'nz': 'New Zealand',
+  'pa': 'Panama',
+  'pe': 'Peru',
+  'ph': 'Philippines',
+  'pl': 'Poland',
+  'pt': 'Portugal',
+  'ro': 'Romania',
+  'rs': 'Serbia',
+  'ru': 'Russia',
+  'sa': 'Saudi Arabia',
+  'se': 'Sweden',
+  'sg': 'Singapore',
+  'si': 'Slovenia',
+  'sk': 'Slovakia',
+  'sv': 'El Salvador',
+  'th': 'Thailand',
+  'tn': 'Tunisia',
+  'tr': 'Turkey',
+  'tw': 'Taiwan',
+  'ua': 'Ukraine',
+  'uk': 'United Kingdom',
+  'us': 'United States',
+  'uy': 'Uruguay',
+  've': 'Venezuela',
   'vn': 'Vietnam',
   'yu': 'Yugoslavia',
+  'za': 'South Africa',
 };
 
 const BUILTIN_PUBLICATIONS = [
@@ -149,6 +211,26 @@ function parseIsvFile(filePath) {
   return pubs;
 }
 
+/**
+ * La base Inducks fait foi ; la liste manuelle ne sert que de secours sans .isv.
+ *
+ * Elle passait avant la base et imposait ses titres : 29 sur 40 différaient
+ * d'Inducks (« Topolino » au lieu de « Topolino (libretto) »), et certains
+ * codes désignaient une autre publication (us/CBCO est « The Barks Collector »).
+ * Seuls les alias d'une entrée dont le titre concorde avec Inducks sont
+ * repris : les autres pourraient rattacher un nom au mauvais numéro.
+ */
+function mergeBuiltinAliases(isvPubs) {
+  const byKey = new Map(isvPubs.map((pub) => [`${pub.country}_${pub.code}`.toLowerCase(), pub]));
+  for (const builtin of BUILTIN_PUBLICATIONS) {
+    const official = byKey.get(`${builtin.country}_${builtin.code}`.toLowerCase());
+    if (official && normalizeText(official.title) === normalizeText(builtin.title)) {
+      official.aliases = [...new Set([...official.aliases, ...builtin.aliases])];
+    }
+  }
+  return isvPubs;
+}
+
 export async function syncInducksDatabase(force = false) {
   if (!fs.existsSync(CACHE_DIR)) {
     fs.mkdirSync(CACHE_DIR, { recursive: true });
@@ -176,14 +258,7 @@ export async function syncInducksDatabase(force = false) {
     try {
       console.log(`[+] Source locale Inducks détectée : ${localIsv}`);
       const isvPubs = parseIsvFile(localIsv);
-      const keys = new Set(db.map(p => `${p.country}_${p.code}`));
-      for (const item of isvPubs) {
-        const k = `${item.country}_${item.code}`;
-        if (!keys.has(k)) {
-          db.push(item);
-          keys.add(k);
-        }
-      }
+      db = mergeBuiltinAliases(isvPubs);
       console.log(`[+] ${isvPubs.length} publications importées depuis le fichier ISV.`);
     } catch (e) {
       console.warn(`[!] Erreur lecture ISV : ${e.message}`);
@@ -218,6 +293,18 @@ export async function resolveInducksPublication(rawInput, options = {}) {
   if (cleanStr.includes('bookUri=')) {
     const m = cleanStr.match(/bookUri=([^&]+)/);
     if (m) cleanStr = path.basename(decodeURIComponent(decodeURIComponent(m[1])));
+  }
+
+  // Nom de scan au format Inducks (« fr_PMHS_S5 », « GHL_M_2 ») : le numéro
+  // est cherché tel quel dans l'index, sans heuristique sur le titre. C'est le
+  // seul chemin qui sait lire un numéro composé (« M  2 ») ou un pays implicite.
+  if (!options.customTomeNum) {
+    const scan = resolveScanStem(cleanStr);
+    const publication = scan && db.find((pub) =>
+      pub.country === scan.countryCode && String(pub.code).toUpperCase() === scan.pubCode.toUpperCase());
+    if (publication) {
+      return certifiedResult(publication, scan.issueNumber, scan, await entriesForIssue(scan), scan.canonicalStem);
+    }
   }
 
   let issueNumber = options.customTomeNum || null;
@@ -289,12 +376,17 @@ export async function resolveInducksPublication(rawInput, options = {}) {
     };
   }
 
-  const countryCode = bestMatch.country;
-  const pubCode = bestMatch.code;
-  const countryFolder = COUNTRY_NAMES[countryCode] || countryCode.toUpperCase();
-  const seriesFolder = bestMatch.title;
+  return certifiedResult(bestMatch, issueNumber, issueLookup.issue, issueLookup.entries);
+}
 
-  const canonicalStem = `${countryCode}_${pubCode}_${issueNumber}`;
+/** Résultat certifié commun aux deux chemins de résolution. */
+function certifiedResult(publication, issueNumber, issue, entries, canonicalStemOverride = null) {
+  const countryCode = publication.country;
+  const pubCode = publication.code;
+  const countryFolder = COUNTRY_NAMES[countryCode] || countryCode.toUpperCase();
+  const seriesFolder = publication.title;
+
+  const canonicalStem = canonicalStemOverride || `${countryCode}_${pubCode}_${issueNumber}`;
   const archiveFilename = `${canonicalStem}.cbz`;
   const imagePrefix = `${canonicalStem}_`;
 
@@ -306,12 +398,12 @@ export async function resolveInducksPublication(rawInput, options = {}) {
     pubCode,
     issueNumber,
     imagePrefix,
-    issueCode: issueLookup.issue?.issueCode || null,
-    issuePageCount: issueLookup.issue?.pageCount || null,
-    issueEntries: issueLookup.entries,
+    issueCode: issue?.issueCode || null,
+    issuePageCount: issue?.pageCount || null,
+    issueEntries: entries || [],
     countryFolder,
     seriesFolder,
     relativeDirectory: path.join(countryFolder, seriesFolder),
-    matchedPublication: bestMatch
+    matchedPublication: publication
   };
 }

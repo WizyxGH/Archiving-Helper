@@ -29,6 +29,15 @@ export async function storeArchive(archivePath, inducks, archiveHash) {
     return { archivePath, stored: false, reason: `Storage volume unavailable: ${volumeRoot}` };
   }
 
+  // Un tome déjà dans la bibliothèque y a été rangé par l'appelant : on ne le
+  // recopie pas ailleurs. Sinon, dès que les deux côtés divergent sur le nom
+  // d'un dossier (« Topolino » / « Topolino (libretto) »), chaque tome est
+  // stocké deux fois.
+  const relativeToRoot = path.relative(path.resolve(targetRoot), path.resolve(archivePath));
+  if (relativeToRoot && !relativeToRoot.startsWith('..') && !path.isAbsolute(relativeToRoot)) {
+    return { archivePath, stored: true, duplicate: false, inPlace: true };
+  }
+
   const targetDirectory = path.join(targetRoot, inducks.relativeDirectory);
   const destinationPath = path.join(targetDirectory, path.basename(archivePath));
   fs.mkdirSync(targetDirectory, { recursive: true });

@@ -12,7 +12,7 @@ import { downloadLinksFile } from '../pipelines/1_acquisition/downloader.mjs';
 import { repairAndRepackToCbz } from '../core/archive.mjs';
 import { syncInducksDatabase, resolveInducksPublication } from '../core/inducks/inducks.mjs';
 import { getCollectionDirectory } from '../pipelines/5_sheets_update/collection_csv.mjs';
-import { targetArchivePath } from '../core/config.mjs';
+import { auditDirectory } from '../core/config.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -99,10 +99,9 @@ async function askArchiveFormat() {
 }
 
 function getTelegramAuditReportPath() {
-  // Le CSV se pose toujours à côté de la racine d'archivage, quel que soit
-  // l'emplacement configuré (TARGET_ARCHIVE_PATH ou son défaut).
-  const targetRoot = targetArchivePath();
-  return path.join(path.dirname(path.resolve(targetRoot)), 'audit_skipped_files.csv');
+  // Même règle que le pipeline Python : AUDIT_DIR, sinon le dossier de
+  // collection. Jamais sur le disque de la bibliothèque.
+  return path.join(auditDirectory(), 'audit_skipped_files.csv');
 }
 
 function clearScreen() {

@@ -4,6 +4,7 @@ import path from 'node:path';
 import { createReadStream } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { colorize } from '../../core/terminal.mjs';
+import { config } from '../../core/config.mjs';
 import { resolveInducksPublication } from '../../core/inducks/inducks.mjs';
 import { storeArchive } from '../3_storage_backup/storage.mjs';
 import { verifyArchive } from '../2_standardisation/verify_archive.mjs';
@@ -34,14 +35,18 @@ export async function registerArchivedComic(archivePath, options = {}) {
   const finalArchivePath = storage.archivePath;
   if (storage.reason && inducks.isCertified) {
     console.warn(colorize(`[!] Stockage Inducks ignoré : ${storage.reason}`, 'yellow'));
-  } else if (storage.stored && !storage.duplicate) {
+  } else if (storage.stored && !storage.duplicate && !storage.inPlace) {
     console.log(colorize(`[+] Archive classée : ${finalArchivePath}`, 'green'));
   }
 
   const collectionDirectory = options.collectionDirectory || getCollectionDirectory();
   let uploadBundle = null;
   let uploadError = null;
-  if (inducks.isCertified && verification.verified) {
+  // Le paquet d'envoi Inducks extrait toutes les images du tome dans le dossier
+  // de collection (sur C: par défaut) : 30 à 800 Mo par tome. Il n'est donc
+  // préparé que sur demande, via INDUCKS_PREPARE_UPLOAD=1.
+  const prepareUpload = options.prepareUpload ?? config('INDUCKS_PREPARE_UPLOAD') === '1';
+  if (prepareUpload && inducks.isCertified && verification.verified) {
     try {
       uploadBundle = prepareInducksUpload(finalArchivePath, inducks, archiveHash, collectionDirectory);
     } catch (error) {

@@ -41,6 +41,9 @@ template. Supported keys:
 | `INDUCKS_DATA_DIR` | Directory holding `inducks_issue.isv` / `inducks_entry.isv` | `data/inducks`, then `~/Downloads/inducks_extracted` |
 | `INDUCKS_PUBLICATIONS_ISV` | `inducks_publication.isv` if not in the data directory | inside `INDUCKS_DATA_DIR` |
 | `INDUCKS_CACHE_DIR` | Synced publications cache | `~/.cache/archiving-helper/inducks` |
+| `INDUCKS_PREPARE_UPLOAD` | `1` extracts each certified tome into an Inducks upload bundle (30–800 MB each) | off |
+| `INDUCKS_COLLECTION_DIR` | Collection CSV and pending upload bundles | `download-files/files_downloads` |
+| `AUDIT_DIR` | Telegram audit CSV and run log | `INDUCKS_COLLECTION_DIR` |
 | `RAR_EXECUTABLE` | `Rar.exe` location | PATH, then `Program Files\WinRAR` |
 
 A single value can be overridden for one run without editing the file:
