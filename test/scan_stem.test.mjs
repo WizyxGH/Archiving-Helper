@@ -160,3 +160,47 @@ test('menu et pipeline écrivent l\'audit au même endroit, hors bibliothèque',
   assert.ok(!auditDirectory().toLowerCase().startsWith(library) || library === path.parse(rootDir).root.toLowerCase(),
     `l'audit ne doit pas être écrit sur le disque de la bibliothèque (${library})`);
 });
+
+test('sans purge, aucun chemin ne supprime un message Telegram', (t) => {
+  const python = findPython();
+  if (!python) return t.skip('Python avec Telethon indisponible');
+
+  // Client factice : enregistre les suppressions au lieu de les faire.
+  const output = runPipelinePython(python, [
+    'import asyncio',
+    'class FakeClient:',
+    '    def __init__(self): self.deleted = []',
+    '    async def delete_messages(self, entity, msg_id): self.deleted.append(msg_id)',
+    'def run(**options):',
+    '    pipeline = p.TelegramArchivePipeline.__new__(p.TelegramArchivePipeline)',
+    '    pipeline.config = p.PipelineConfig(target_root=Path("."), staging_dir=Path("."), audit_file=Path("a.csv"), **options)',
+    '    pipeline.client = FakeClient(); stats = {}',
+    '    asyncio.run(pipeline.purge_message(None, 42, stats))',
+    '    return pipeline.client.deleted, stats.get("purged", 0)',
+    'print(run(dry_run=False, delete_identical_duplicates=False))',
+    'print(run(dry_run=True, delete_identical_duplicates=True))',
+    'print(run(dry_run=False, delete_identical_duplicates=True))',
+  ]).filter((line) => line.startsWith('('));
+
+  assert.deepEqual(output, ['([], 0)', '([], 0)', '([42], 1)']);
+});
+
+test('le pipeline Python ne référence aucun nom indéfini', (t) => {
+  const python = findPython();
+  if (!python) return t.skip('Python avec Telethon indisponible');
+  try {
+    execFileSync(python, ['-m', 'pyflakes', '--version'], { stdio: 'ignore' });
+  } catch {
+    return t.skip('pyflakes indisponible (pip install pyflakes)');
+  }
+  // Bug d'origine : _EarlyDuplicateExit utilisé sans être défini ; chaque
+  // téléchargement finissait en « name ... is not defined ».
+  let report = '';
+  try {
+    execFileSync(python, ['-m', 'pyflakes', path.join(rootDir, 'download-files', 'telegram_to_drive_pipeline.py')], { encoding: 'utf8' });
+  } catch (error) {
+    report = String(error.stdout || '');
+  }
+  const undefinedNames = report.split(/\r?\n/).filter((line) => /undefined name/.test(line));
+  assert.deepEqual(undefinedNames, []);
+});

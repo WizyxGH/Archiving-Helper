@@ -505,6 +505,19 @@ INDUCKS_STEM_IN_IMAGE_RE = re.compile(
 # On peut donc conclure « deja archive » apres 512 Ko au lieu de 30 a 780 Mo.
 HEADER_PROBE_BYTES = 512 * 1024
 
+
+class _EarlyDuplicateExit(Exception):
+    """Interrompt download_media : l'en-tete prouve que le tome est deja archive.
+
+    Telethon ignore la valeur de retour du progress_callback ; seule une
+    exception arrete le telechargement en cours.
+    """
+
+    def __init__(self, stem: str, existing_path: Path):
+        super().__init__(f"{stem} deja archive : {existing_path}")
+        self.stem = stem
+        self.existing_path = existing_path
+
 # Noms de fichiers generiques, rejetes comme faux positifs. On compare le
 # premier segment entier : un test « commence par » avec « p » ecartait tous
 # les pays en p (pl_GM_14, pt_DEG_29), qui finissaient dans Unknown.
@@ -844,6 +857,22 @@ class TelegramArchivePipeline:
                 pwd = input("Enter 2FA Password: ").strip()
                 await self.client.sign_in(password=pwd)
 
+    async def purge_message(self, entity, msg_id: int, stats: dict, duplicate: bool = True) -> bool:
+        """Supprime le message Telegram si, et seulement si, la purge est active.
+
+        Tous les chemins de suppression passent ici : en --no-purge (ou en
+        audit), aucun message n'est jamais supprime, meme pour un doublon prouve.
+        """
+        if self.config.dry_run or not self.config.delete_identical_duplicates:
+            print(dim(f"          [4/4] Message Telegram #{msg_id} conserve (purge desactivee)"), flush=True)
+            return False
+        print(warn(f"          [4/4] Suppression du message Telegram #{msg_id}..."), end="", flush=True)
+        await self.client.delete_messages(entity, msg_id)
+        print(" OK", flush=True)
+        if duplicate:   # le bilan ne compte en « doublons purges » que les doublons
+            stats["purged"] = stats.get("purged", 0) + 1
+        return True
+
     async def resolve_channel(self, channel_input: str):
         """Resolves channel entity supporting usernames, IDs, and private invite links."""
         # Handle invite link
@@ -1051,14 +1080,7 @@ class TelegramArchivePipeline:
                         ),
                         flush=True,
                     )
-                    print(
-                        warn(f"          [4/4] Suppression du message Telegram #{msg_id}..."),
-                        end="",
-                        flush=True,
-                    )
-                    await self.client.delete_messages(entity, msg_id)
-                    print(" OK", flush=True)
-                    stats["purged"] = stats.get("purged", 0) + 1
+                    await self.purge_message(entity, msg_id, stats)
                     stats["skipped"] += 1
                     # Le fichier partiel n'a aucune valeur : on le jette.
                     shutil.rmtree(issue_temp_dir, ignore_errors=True)
@@ -1099,13 +1121,19 @@ class TelegramArchivePipeline:
                     post_dup = self.catalog.find_duplicate(canonical_name)
                     if post_dup and post_dup["size"] == local_sz and post_dup["path"].exists():
                         print(warn(f"          [!] Deja present sur le Drive ({format_size(post_dup['size'])}) sous son vrai nom Inducks!"), flush=True)
-                        print(warn(f"          [4/4] Suppression du message Telegram #{msg_id}..."), end="", flush=True)
-                        await self.client.delete_messages(entity, msg_id)
-                        print(" OK", flush=True)
-                        stats["purged"] = stats.get("purged", 0) + 1
+                        await self.purge_message(entity, msg_id, stats)
+                        stats["skipped"] += 1
                         continue
 
                 target_folder.mkdir(parents=True, exist_ok=True)
+
+                # Un fichier different porte deja ce nom : on ne l'ecrase jamais.
+                # (Sur Windows, shutil.move echoue puis copy2 remplacait le tome.)
+                if final_cbr_path.exists():
+                    raise RuntimeError(
+                        f"Un autre fichier existe deja a destination ({format_size(final_cbr_path.stat().st_size)}) : "
+                        f"{final_cbr_path} — rien n'est ecrase."
+                    )
 
                 # Deplacement plutot que copie : le staging et la destination sont sur
                 # le meme volume (D:), donc c'est un renommage instantane. Mesure a
@@ -1142,10 +1170,8 @@ class TelegramArchivePipeline:
                 if collection_result.returncode != 0:
                     raise RuntimeError("La mise à jour de collection a échoué ; le message Telegram sera conservé.")
 
-                # Safe Telegram Deletion ONLY AFTER VERIFICATION
-                print(warn(f"          [4/4] Suppression du message Telegram #{msg_id}..."), end="", flush=True)
-                await self.client.delete_messages(entity, msg_id)
-                print(" OK", flush=True)
+                # Suppression Telegram seulement apres verification, et si la purge est active
+                await self.purge_message(entity, msg_id, stats, duplicate=False)
 
                 # Update live catalog
                 self.catalog.files_by_name[canonical_name.lower()] = {"path": final_cbr_path, "size": final_cbr_path.stat().st_size}
