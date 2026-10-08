@@ -72,14 +72,25 @@ test('le sommaire d\'un numéro composé est retrouvé', async () => {
 });
 
 function findPython() {
-  return ['py', 'python'].find((candidate) => {
+  const localAppData = process.env.LOCALAPPDATA || '';
+  const candidates = [
+    { command: 'py', args: ['-3'] },
+    { command: 'python', args: [] },
+    localAppData && {
+      command: path.join(localAppData, 'Programs', 'Python', 'Python312', 'python.exe'),
+      args: [],
+    },
+  ].filter(Boolean);
+
+  for (const c of candidates) {
     try {
-      execFileSync(candidate, ['-c', 'import telethon'], { stdio: 'ignore' });
-      return true;
+      execFileSync(c.command, [...c.args, '-c', 'import telethon'], { stdio: 'ignore' });
+      return c;
     } catch {
-      return false;
+      // continuer
     }
-  });
+  }
+  return null;
 }
 
 /** Exécute du Python avec le module du pipeline importé sous le nom `p`. */
@@ -90,7 +101,7 @@ function runPipelinePython(python, lines, args = []) {
     'import telegram_to_drive_pipeline as p',
     ...lines,
   ].join('\n');
-  return execFileSync(python, ['-c', script, path.join(rootDir, 'download-files'), ...args], { encoding: 'utf8' })
+  return execFileSync(python.command, [...python.args, '-c', script, path.join(rootDir, 'download-files'), ...args], { encoding: 'utf8' })
     .trim().split(/\r?\n/)
     // Le pipeline horodate chaque ligne affichée (« [20:48:47] ... »).
     .map((line) => line.replace(/^\[\d{2}:\d{2}:\d{2}\]\s*/, ''));
@@ -189,7 +200,7 @@ test('le pipeline Python ne référence aucun nom indéfini', (t) => {
   const python = findPython();
   if (!python) return t.skip('Python avec Telethon indisponible');
   try {
-    execFileSync(python, ['-m', 'pyflakes', '--version'], { stdio: 'ignore' });
+    execFileSync(python.command, [...python.args, '-m', 'pyflakes', '--version'], { stdio: 'ignore' });
   } catch {
     return t.skip('pyflakes indisponible (pip install pyflakes)');
   }
@@ -197,10 +208,38 @@ test('le pipeline Python ne référence aucun nom indéfini', (t) => {
   // téléchargement finissait en « name ... is not defined ».
   let report = '';
   try {
-    execFileSync(python, ['-m', 'pyflakes', path.join(rootDir, 'download-files', 'telegram_to_drive_pipeline.py')], { encoding: 'utf8' });
+    execFileSync(python.command, [...python.args, '-m', 'pyflakes', path.join(rootDir, 'download-files', 'telegram_to_drive_pipeline.py')], { encoding: 'utf8' });
   } catch (error) {
     report = String(error.stdout || '');
   }
   const undefinedNames = report.split(/\r?\n/).filter((line) => /undefined name/.test(line));
   assert.deepEqual(undefinedNames, []);
 });
+
+test('le pipeline Python quitte proprement sans traceback si le disque cible est absent', (t) => {
+  const python = findPython();
+  if (!python) return t.skip('Python avec Telethon indisponible');
+
+  let output = '';
+  let exitCode = 0;
+  try {
+    output = execFileSync(
+      python.command,
+      [
+        ...python.args,
+        path.join(rootDir, 'download-files', 'telegram_to_drive_pipeline.py'),
+        '--target-dir', 'Z:\\NonExistentDrive\\Disney comics',
+        '--staging-dir', 'Z:\\NonExistentDrive\\_staging_temp',
+      ],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }
+    );
+  } catch (err) {
+    exitCode = err.status;
+    output = (err.stdout || '') + (err.stderr || '');
+  }
+
+  assert.equal(exitCode, 1, 'doit quitter avec le code 1');
+  assert.match(output, /ERREUR CRITIQUE/i, 'doit afficher une erreur critique claire');
+  assert.doesNotMatch(output, /Traceback/i, 'ne doit pas lever de traceback Python non géré');
+});
+

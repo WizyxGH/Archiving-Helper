@@ -25,6 +25,7 @@ import csv
 import json
 import shutil
 import zipfile
+import tempfile
 import argparse
 import asyncio
 import subprocess
@@ -472,6 +473,17 @@ def write_run_log(config: "PipelineConfig", stats: dict) -> None:
         print(f"[!] Journal non écrit : {err}", flush=True)
 
 
+def is_drive_accessible(path_obj: Path) -> bool:
+    """Vérifie si le lecteur/volume d'un chemin est monté et accessible."""
+    try:
+        anchor = path_obj.anchor or (path_obj.drive + "\\" if path_obj.drive else "")
+        if anchor:
+            return Path(anchor).exists()
+        return True
+    except Exception:
+        return False
+
+
 def clean_stem(filename: str) -> str:
     """
     Strips comic extensions, multi-part indicators, and punctuation
@@ -833,9 +845,25 @@ class TelegramArchivePipeline:
     """Main pipeline orchestrator."""
     def __init__(self, config: PipelineConfig):
         self.config = config
+        self._validate_storage()
         self.catalog = InducksCatalog(config.target_root)
         self.audit = AuditLogger(config.audit_file)
         self.client: Optional[TelegramClient] = None
+
+    def _validate_storage(self):
+        """Vérifie l'accessibilité du support de stockage cible."""
+        if not is_drive_accessible(self.config.target_root):
+            anchor = self.config.target_root.anchor or (self.config.target_root.drive + "\\" if self.config.target_root.drive else "Cible")
+            print(colorize(f"\n[ERREUR CRITIQUE] Le lecteur '{anchor}' du dossier d'archivage est inaccessible !", "red+bold"), flush=True)
+            print(colorize(f"  Dossier cible configuré : {self.config.target_root}", "red"), flush=True)
+            print(colorize("  -> Le disque dur externe n'est pas branché ou sa lettre a changé sous Windows.", "yellow"), flush=True)
+            print(colorize("  -> Branchez votre disque, ou configurez TARGET_ARCHIVE_PATH dans download-files/.env.\n", "yellow"), flush=True)
+            sys.exit(1)
+
+        if not is_drive_accessible(self.config.staging_dir):
+            fallback_staging = Path(tempfile.gettempdir()) / "archiving-helper" / "_staging_temp"
+            print(colorize(f"[*] Dossier staging inaccessible ({self.config.staging_dir}). Redirection vers : {fallback_staging}", "yellow"), flush=True)
+            self.config.staging_dir = fallback_staging
 
     async def connect(self):
         """Initializes and authenticates Telethon client."""
@@ -1004,9 +1032,22 @@ class TelegramArchivePipeline:
                 continue
 
             # LIVE EXECUTION: 1-by-1 Download, Rebuild & Verify
-            self.config.staging_dir.mkdir(parents=True, exist_ok=True)
-            issue_temp_dir = self.config.staging_dir / f"temp_{msg_id}"
-            issue_temp_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                self.config.staging_dir.mkdir(parents=True, exist_ok=True)
+                issue_temp_dir = self.config.staging_dir / f"temp_{msg_id}"
+                issue_temp_dir.mkdir(parents=True, exist_ok=True)
+            except OSError as staging_err:
+                fallback_staging = Path(tempfile.gettempdir()) / "archiving-helper" / "_staging_temp"
+                try:
+                    fallback_staging.mkdir(parents=True, exist_ok=True)
+                    self.config.staging_dir = fallback_staging
+                    issue_temp_dir = self.config.staging_dir / f"temp_{msg_id}"
+                    issue_temp_dir.mkdir(parents=True, exist_ok=True)
+                    print(colorize(f"          [*] Staging redirigé vers : {fallback_staging}", "yellow"), flush=True)
+                except Exception as fatal_err:
+                    stats["errors"] += 1
+                    print(failure(f"    [ERREUR STOCKAGE] Impossible de créer le dossier temporaire : {fatal_err}"), flush=True)
+                    continue
 
             try:
                 local_staging_file = issue_temp_dir / raw_filename

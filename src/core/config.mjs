@@ -93,6 +93,19 @@ export const downloadFilesDir = path.join(rootDir, 'download-files');
 export const targetArchivePath = () =>
   path.resolve(config('TARGET_ARCHIVE_PATH', String.raw`D:\Duckburg Archives\Disney comics`));
 
+/**
+ * Vérifie si le volume ou lecteur d'un chemin est monté et accessible.
+ * Évite les plantages lorsque le disque dur externe (ex: D:) est débranché.
+ */
+export function isPathVolumeAccessible(targetPath) {
+  try {
+    const root = path.parse(path.resolve(targetPath)).root;
+    return Boolean(root && fs.existsSync(root));
+  } catch {
+    return false;
+  }
+}
+
 /** CSV de collection et paquets d'envoi Inducks (sur le poste, pas sur D:). */
 export const collectionDirectory = () =>
   path.resolve(config('INDUCKS_COLLECTION_DIR', path.join(downloadFilesDir, 'files_downloads')));

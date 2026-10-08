@@ -201,3 +201,17 @@ test('Canada se résout en Canada, jamais en CA', () => {
   const table = readJsTable(JS_TABLES[0]);
   assert.equal(table.ca, 'Canada');
 });
+
+test('download-files/src/web_comic.mjs renvoie vers src/pipelines sans copie divergente', () => {
+  const source = fs.readFileSync(path.join(rootDir, 'download-files/src/web_comic.mjs'), 'utf8');
+  assert.match(source, /export \* from '\.\.\/\.\.\/src\/pipelines\/1_acquisition\/web_comic\.mjs'/);
+  assert.doesNotMatch(source, /function downloadWebComic/, 'implémentation concurrente réintroduite');
+});
+
+test('isPathVolumeAccessible détecte les volumes montés et inexistants', async () => {
+  const { isPathVolumeAccessible } = await import('../src/core/config.mjs');
+  assert.equal(isPathVolumeAccessible(process.cwd()), true);
+  if (process.platform === 'win32') {
+    assert.equal(isPathVolumeAccessible('Z:\\NonExistentDrive\\Folder'), false);
+  }
+});

@@ -12,7 +12,7 @@ import { downloadLinksFile } from '../pipelines/1_acquisition/downloader.mjs';
 import { repairAndRepackToCbz } from '../core/archive.mjs';
 import { syncInducksDatabase, resolveInducksPublication } from '../core/inducks/inducks.mjs';
 import { getCollectionDirectory } from '../pipelines/5_sheets_update/collection_csv.mjs';
-import { auditDirectory } from '../core/config.mjs';
+import { auditDirectory, targetArchivePath, isPathVolumeAccessible } from '../core/config.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -277,6 +277,22 @@ async function showMainMenu() {
         continue;
       }
 
+      if (mode !== '1' && mode !== '2' && mode !== '3') {
+        console.log('  Choix non reconnu, retour au menu.');
+        continue;
+      }
+
+      const targetRoot = targetArchivePath();
+      if (!isPathVolumeAccessible(targetRoot)) {
+        const rootVolume = path.parse(targetRoot).root;
+        console.log(colorize(`\n  [ERREUR CRITIQUE] Le lecteur '${rootVolume}' n'est pas connecté ou est inaccessible.`, 'red+bold'));
+        console.log(colorize(`  Dossier cible configuré : ${targetRoot}`, 'red'));
+        console.log(colorize(`  -> Le disque dur externe n'est pas branché sous Windows.`, 'yellow'));
+        console.log(colorize(`  -> Branchez votre disque ou modifiez TARGET_ARCHIVE_PATH dans download-files/.env.\n`, 'yellow'));
+        await ask('Appuyez sur Entrée pour continuer...');
+        continue;
+      }
+
       const runArguments = [];
       let warning = '';
       if (mode === '2') {
@@ -286,9 +302,6 @@ async function showMainMenu() {
           '      Assurez-vous que la synchronisation est à jour.\n';
       } else if (mode === '3') {
         runArguments.push('--no-purge');
-      } else if (mode !== '1') {
-        console.log('  Choix non reconnu, retour au menu.');
-        continue;
       }
 
       if (mode !== '1') {

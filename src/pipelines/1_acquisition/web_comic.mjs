@@ -81,7 +81,7 @@ export async function downloadWebComic(bookUri, outputDir, customTomeNum = null,
   if (inducks.isCertified) {
     console.log(colorize(`  [OK] Inducks  : ${inducks.matchedPublication.title} (${inducks.canonicalStem})`, 'green'));
   } else {
-    console.log(colorize(`  [!] Inducks   : Non répertorié avec certitude -> Nom d'origine préservé`, 'yellow'));
+    console.log(colorize(`  [!] Inducks   : Non répertorié avec certitude -> Nom d'origine préservé (Zéro invention)`, 'yellow'));
   }
   console.log(`  Archive Cible : ${archiveFilename}`);
   console.log(`  Destination   : ${targetDir}`);
