@@ -1,6 +1,13 @@
 @echo off
+chcp 65001 >nul
 setlocal enabledelayedexpansion
-title Archive Extractor
+title Archiving Helper - Extraction d'archives
+cd /d "%~dp0"
+
+echo ======================================================================
+echo   📂 EXTRACTION ET APLATISSEMENT D'ARCHIVES (CBR, CBZ, RAR, ZIP)
+echo ======================================================================
+echo.
 
 :: === Auto-detect extraction tool ===
 set "EXTRACTOR="
@@ -61,9 +68,10 @@ echo.
 set "EXTENSIONS=.cbr .cbz .zip .rar .7z"
 
 if "%~1"=="" (
-    echo Enter the folder path containing archives (or press Enter for current directory):
+    echo Glissez-déposez le dossier contenant les archives (ou Entrée pour le dossier courant) :
     set /p "TARGET_DIR="
     if not defined TARGET_DIR set "TARGET_DIR=%CD%"
+    set "TARGET_DIR=!TARGET_DIR:"=!"
     call :process_directory "!TARGET_DIR!"
 ) else (
     :: Arguments provided (drag and drop files or folders)

@@ -1,19 +1,25 @@
 @echo off
 chcp 65001 >nul
 setlocal enabledelayedexpansion
-title WebP to JPG Conversion
+title Archiving Helper - Conversion WebP vers JPG
+cd /d "%~dp0"
+
+echo ======================================================================
+echo   🖼️ CONVERSION WEBP VERS JPG (IMAGEMAGICK)
+echo ======================================================================
+echo.
 
 where magick >nul 2>nul
 if errorlevel 1 (
-    echo [ERROR] ImageMagick is not installed or not in PATH.
-    echo Please install ImageMagick from https://imagemagick.org/
+    echo [ERREUR] ImageMagick n'est pas installe ou n'est pas dans le PATH.
+    echo Veuillez installer ImageMagick depuis https://imagemagick.org/
     pause
     exit /b 1
 )
 
-:: Prompt for deletion preference
+:: Choix de suppression des originaux
 echo.
-choice /c YN /m "Do you want to delete original .webp files after conversion? (Y/N)"
+choice /c ON /m "Supprimer les fichiers .webp originaux apres conversion ? (O/N)"
 if errorlevel 2 (
     set "DELETE_ORIGINAL=false"
 ) else (
@@ -22,13 +28,23 @@ if errorlevel 2 (
 echo.
 
 if "%~1"=="" (
-    call :convert_dir "%CD%"
+    echo Glissez-déposez le dossier ou fichier WebP (ou Entrée pour le dossier courant) :
+    set /p "TARGET_INPUT="
+    if "!TARGET_INPUT!"=="" set "TARGET_INPUT=%CD%"
+    set "TARGET_INPUT=!TARGET_INPUT:"=!"
+    if exist "!TARGET_INPUT!\*" (
+        call :convert_dir "!TARGET_INPUT!"
+    ) else (
+        call :convert_file "!TARGET_INPUT!"
+    )
 ) else (
     for %%A in (%*) do (
-        if exist "%%~fA\*" (
-            call :convert_dir "%%~fA"
+        set "ITEM=%%~fA"
+        set "ITEM=!ITEM:"=!"
+        if exist "!ITEM!\*" (
+            call :convert_dir "!ITEM!"
         ) else (
-            call :convert_file "%%~fA"
+            call :convert_file "!ITEM!"
         )
     )
 )

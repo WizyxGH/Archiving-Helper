@@ -1,39 +1,71 @@
 @echo off
-setlocal
-title Lossless PDF to JPG Extraction
+chcp 65001 >nul
+setlocal enabledelayedexpansion
+title Archiving Helper - Extraction PDF vers JPG / CBZ
+cd /d "%~dp0"
 
 where node >nul 2>nul
 if errorlevel 1 (
-    echo [ERROR] Node.js is not installed or not in PATH.
-    echo Please install Node.js (>= 18) from https://nodejs.org/
+    echo [ERREUR] Node.js n'est pas installe ou n'est pas dans le PATH.
+    echo Veuillez installer Node.js depuis https://nodejs.org/
+    echo.
     pause
     exit /b 1
 )
 
-if "%~1"=="" (
-    echo Enter a PDF file or folder path (or drag and drop files onto this script):
-    set /p "TARGET_INPUT="
-    if not defined TARGET_INPUT (
-        echo.
-        echo Available CLI options:
-        echo   --output-dir  ^<folder^>        Output folder for JPGs
-        echo   --output-name ^<template^>      Filename template, e.g.: {name}_{page:03d}
-        echo   --archive     cbr^|cbz         Create a CBR or CBZ archive after extraction
-        echo   --keep-jpgs                    Keep JPG folder after archiving
-        echo   --workers     ^<count^>        Parallel workers count (1-32)
-        pause
-        exit /b 2
-    )
-    node "%~dp0pdf-to-jpg.mjs" "!TARGET_INPUT!"
-) else (
+if not "%~1"=="" (
     node "%~dp0pdf-to-jpg.mjs" %*
+    goto finish
 )
 
+echo ======================================================================
+echo   📄 EXTRACTION SANS PERTE PDF VERS JPG / CBZ / CBR
+echo ======================================================================
+echo.
+set "TARGET_INPUT="
+echo Glissez-déposez un fichier ou dossier PDF (ou entrez son chemin) :
+set /p "TARGET_INPUT="
+if not defined TARGET_INPUT (
+    echo.
+    echo [INFO] Aucun chemin spécifié.
+    echo.
+    echo Options disponibles en ligne de commande :
+    echo   --output-dir  ^<dossier^>     Dossier de sortie pour les JPG
+    echo   --output-name ^<modèle^>      Modèle de nom, ex: {name}_{page:03d}
+    echo   --archive     cbz           Créer une archive CBZ après extraction
+    echo   --archive     cbr           Créer une archive CBR après extraction
+    echo   --keep-jpgs                 Conserver le dossier JPG après compression
+    echo   --workers     ^<nombre^>      Nombre de threads parallèles (1-32)
+    echo.
+    pause
+    exit /b 0
+)
+
+:: Nettoyer les guillemets éventuels
+set "TARGET_INPUT=!TARGET_INPUT:"=!"
+
+echo.
+echo Désirez-vous créer une archive après extraction ?
+echo   [1] CBZ (Recommandé)
+echo   [2] CBR
+echo   [3] Non (garder le dossier d'images JPG uniquement)
+set "ARCHIVE_CHOICE="
+set /p "ARCHIVE_CHOICE=Votre choix [1-3, défaut 1] : "
+
+set "ARCHIVE_ARG=--archive cbz"
+if "!ARCHIVE_CHOICE!"=="2" set "ARCHIVE_ARG=--archive cbr"
+if "!ARCHIVE_CHOICE!"=="3" set "ARCHIVE_ARG="
+
+echo.
+node "%~dp0pdf-to-jpg.mjs" "!TARGET_INPUT!" !ARCHIVE_ARG!
+
+:finish
 if errorlevel 1 (
     echo.
-    echo [ERROR] Extraction finished with errors.
-    pause
-    exit /b 1
+    echo [!] L'extraction s'est terminée avec des erreurs.
+) else (
+    echo.
+    echo [✓] Extraction terminée avec succès !
 )
 
 echo.

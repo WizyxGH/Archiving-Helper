@@ -1,11 +1,18 @@
 @echo off
+chcp 65001 >nul
 setlocal enabledelayedexpansion
-title Images to PDF
+title Archiving Helper - Assembler des images en PDF
+cd /d "%~dp0"
+
+echo ======================================================================
+echo   📑 ASSEMBLER DES IMAGES EN UN FICHIER PDF (IMAGEMAGICK)
+echo ======================================================================
+echo.
 
 where magick >nul 2>nul
 if errorlevel 1 (
-    echo [ERROR] ImageMagick is not installed or not in PATH.
-    echo Please install ImageMagick from https://imagemagick.org/
+    echo [ERREUR] ImageMagick n'est pas installe ou n'est pas dans le PATH.
+    echo Veuillez installer ImageMagick depuis https://imagemagick.org/
     pause
     exit /b 1
 )
@@ -14,7 +21,7 @@ set "TARGET_DIR="
 set "OUTPUT_PDF="
 
 if "%~1"=="" (
-    echo Enter the path of the folder containing images (or press Enter for current directory):
+    echo Glissez-déposez le dossier contenant les images (ou Entrée pour le dossier courant) :
     set /p "TARGET_DIR="
     if not defined TARGET_DIR set "TARGET_DIR=%CD%"
 ) else (
@@ -24,6 +31,8 @@ if "%~1"=="" (
         set "TARGET_DIR=%~dp1"
     )
 )
+
+set "TARGET_DIR=!TARGET_DIR:"=!"
 
 if not exist "%TARGET_DIR%" (
     echo [ERROR] Folder does not exist: "%TARGET_DIR%"
