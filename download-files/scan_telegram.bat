@@ -7,9 +7,11 @@ echo  SCANNER DE FICHIERS TELEGRAM (SANS TELECHARGEMENT)
 echo ======================================================
 echo.
 
-"C:\Users\starl\AppData\Local\Programs\Python\Python312\python.exe" "%~dp0scan_telegram_channel.py"
-if errorlevel 1 (
-    py "%~dp0scan_telegram_channel.py"
+where python >nul 2>nul
+if %errorlevel% equ 0 (
+    python "%~dp0scan_telegram_channel.py"
+) else (
+    py -3 "%~dp0scan_telegram_channel.py"
 )
 
 echo.

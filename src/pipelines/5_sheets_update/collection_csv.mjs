@@ -5,16 +5,16 @@ import { collectionDirectory } from '../../core/config.mjs';
 const COLUMNS = [
   'canonical_stem',
   'inducks_issue_code',
+  'country',
   'publication',
   'issue_number',
   'format',
   'archive_path',
   'archive_size_bytes',
-  'sha256',
   'image_count',
-  'inducks_entry_order',
-  'upload_bundle',
+  'sha256',
   'status',
+  'comment',
   'updated_at',
 ];
 

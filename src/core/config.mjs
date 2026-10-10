@@ -145,6 +145,12 @@ export const publicationsIsvPath = () => {
     : path.join(inducksDataDir(), 'inducks_publication.isv');
 };
 
+/** Identifiant de connexion au compte Inducks.org. */
+export const inducksUsername = () => config('INDUCKS_USERNAME', '');
+
+/** Mot de passe du compte Inducks.org. */
+export const inducksPassword = () => config('INDUCKS_PASSWORD', '');
+
 // ---------------------------------------------------------------------------
 // Exécutables externes
 // ---------------------------------------------------------------------------

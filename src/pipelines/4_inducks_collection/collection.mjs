@@ -72,7 +72,8 @@ export async function registerArchivedComic(archivePath, options = {}) {
     collection_key: `${canonicalStem}|${archiveFormat}`,
     canonical_stem: canonicalStem,
     inducks_issue_code: inducks.issueCode || '',
-    publication: inducks.matchedPublication?.title || '',
+    country: inducks.countryCode || (inducks.matchedPublication?.country) || (canonicalStem.includes('_') ? canonicalStem.split('_')[0].toLowerCase() : ''),
+    publication: inducks.pubCode || (inducks.matchedPublication?.code ? (inducks.matchedPublication.code.includes('/') ? inducks.matchedPublication.code.split('/')[1] : inducks.matchedPublication.code) : (canonicalStem.includes('_') ? canonicalStem.split('_')[1] : '')),
     issue_number: inducks.issueNumber || '',
     format: archiveFormat,
     archive_path: finalArchivePath,
@@ -86,7 +87,7 @@ export async function registerArchivedComic(archivePath, options = {}) {
   };
 
   const csvPath = updateCollectionCsv(record, collectionDirectory);
-  console.log(colorize(`[+] Collection CSV actualisé : ${csvPath}`, 'green'));
+  console.log(colorize('          [+] Collection CSV actualisée', 'green'));
   if (uploadBundle) {
     console.log(colorize(`[+] Paquet Inducks prêt (${uploadBundle.imageCount} images), confirmation requise : ${uploadBundle.path}`, 'cyan'));
   }

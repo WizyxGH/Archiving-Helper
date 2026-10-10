@@ -7,6 +7,7 @@ import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
 import { downloadWebComic } from './web_comic.mjs';
 import { registerArchivedComicSafely } from '../4_inducks_collection/collection.mjs';
+import { getItemDetails, selectItemFiles } from './archive_org.mjs';
 import { colorize } from '../../core/terminal.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -136,11 +137,33 @@ export async function downloadLinksFile(filePath, options = {}) {
   // 2. Direct download links
   if (directUrls.length > 0) {
     console.log(`\n[+] ${directUrls.length} lien(s) direct(s) à télécharger...`);
+    const resolvedUrls = [];
+    for (const u of directUrls) {
+      if (/archive\.org\/details\/([^\/\?#]+)/i.test(u)) {
+        try {
+          const id = u.match(/archive\.org\/details\/([^\/\?#]+)/i)[1];
+          process.stdout.write(`Résolution Archive.org (${id})... `);
+          const details = await getItemDetails(id);
+          const selected = selectItemFiles(details, 'hd');
+          if (selected.length > 0) {
+            resolvedUrls.push(selected[0].downloadUrl);
+            console.log(`OK (${selected[0].name})`);
+          } else {
+            console.log('Aucun PDF trouvé');
+          }
+        } catch (err) {
+          console.error(`Échec: ${err.message}`);
+        }
+      } else {
+        resolvedUrls.push(u);
+      }
+    }
+
     const aria2Path = options.noAria2 ? null : await getAria2Path();
-    if (aria2Path) {
-      await downloadWithAria2(aria2Path, directUrls, outputDir, options);
+    if (aria2Path && resolvedUrls.length > 0) {
+      await downloadWithAria2(aria2Path, resolvedUrls, outputDir, options);
     } else {
-      console.log('aria2c non détecté. Téléchargement Node...');
+      console.log('aria2c non détecté ou aucun lien résolu.');
     }
   }
 

@@ -42,8 +42,13 @@ files_downloads/
 downloads/
 temp/
 tmp/
+scratch/
 Repaired_CBR/
 *.csv
+*.tsv
+.inducks_collection.json
+*collection*.json
+*collection*.csv
 .aria2_input_*.txt
 
 # Comic Archives & Large Binaries

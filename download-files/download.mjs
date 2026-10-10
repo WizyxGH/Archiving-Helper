@@ -10,6 +10,7 @@ import { createUnzip } from 'node:zlib'
 import { downloadWebComic } from './download_web_comic.mjs'
 import { colorize } from '../src/core/terminal.mjs'
 import { registerArchivedComicSafely } from '../src/pipelines/4_inducks_collection/collection.mjs'
+import { getItemDetails, selectItemFiles } from '../src/pipelines/1_acquisition/archive_org.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const binDir = path.join(scriptDir, 'bin')
@@ -216,6 +217,16 @@ export async function resolveMediafire(url) {
     return { downloadUrl: directMatch[1], filename: null };
   }
   throw new Error('Unable to extract Mediafire direct download link.');
+}
+
+export async function resolveArchiveOrg(url) {
+  const match = url.match(/archive\.org\/details\/([^\/\?#]+)/i);
+  if (!match) throw new Error('Not an archive.org details URL');
+  const identifier = match[1];
+  const details = await getItemDetails(identifier);
+  const selected = selectItemFiles(details, 'hd');
+  if (selected.length === 0) throw new Error(`No downloadable PDF/archive found for Archive.org item: ${identifier}`);
+  return { downloadUrl: selected[0].downloadUrl, filename: selected[0].name };
 }
 
 // ─── High-Speed Aria2c Downloader ───────────────────────────────────────────
@@ -524,6 +535,15 @@ async function processInputFile(filePath, options = {}) {
           const res = await resolve1fichier(u, options.apiKey)
           resolvedUrls.push(res.downloadUrl)
           console.log('OK')
+        } catch (err) {
+          console.error(`Failed: ${err.message}`)
+        }
+      } else if (/archive\.org\/details\//i.test(u)) {
+        try {
+          process.stdout.write(`Resolving [${i + 1}/${directUrls.length}] Archive.org... `)
+          const res = await resolveArchiveOrg(u)
+          resolvedUrls.push(res.downloadUrl)
+          console.log(`OK (${res.filename || 'PDF'})`)
         } catch (err) {
           console.error(`Failed: ${err.message}`)
         }

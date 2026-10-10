@@ -22,44 +22,42 @@ echo ======================================================================
 echo          📦 ARCHIVING HELPER - DOWNLOADER
 echo ======================================================================
 echo.
-echo   [1] Télécharger un tome Comic Viewer (CBR par défaut, CBZ au choix)
+echo   [1] Télécharger depuis un lien / URL ou recherche (Archive.org, Blogspot, Web Comic, Direct)
 echo   [2] Télécharger les liens depuis files.txt (Multi-connexions)
 echo   [3] Réparer / Désanonymiser une archive ou dossier (Vers CBZ)
-echo   [4] Télécharger / Crawler des BDs Blogspot / Blogger (HD -^> CBR)
-echo   [5] Scanner de taille d'un canal Telegram (0 octet telecharge)
-echo   [6] Mode surveillance de dossier (Watch Folder)
+echo   [4] Scanner de taille d'un canal Telegram (0 octet telecharge)
+echo   [5] Mode surveillance de dossier (Watch Folder)
 echo   [0] Retour / Quitter
 echo.
 echo ======================================================================
-set /p "CHOICE=Choisissez une option [0-6]: "
+set /p "CHOICE=Choisissez une option [0-5]: "
 
-if "%CHOICE%"=="1" goto web_comic
+if "%CHOICE%"=="1" goto unified_download
 if "%CHOICE%"=="2" goto download_txt
 if "%CHOICE%"=="3" goto repair_cbr
-if "%CHOICE%"=="4" goto blogspot_comic
-if "%CHOICE%"=="5" goto scan_telegram
-if "%CHOICE%"=="6" goto watch_folder
+if "%CHOICE%"=="4" goto scan_telegram
+if "%CHOICE%"=="5" goto watch_folder
 if "%CHOICE%"=="0" goto exit_app
 goto menu
 
-:web_comic
+:unified_download
 cls
 echo ======================================================================
-echo   TÉLÉCHARGEMENT COMIC VIEWER (HD LOSSLESS -^> CBZ)
+echo   TÉLÉCHARGEMENT DEPUIS UN LIEN / URL OU RECHERCHE
 echo ======================================================================
 echo.
-echo Collez le lien Comic Viewer ou le bookUri :
-echo Exemple : Alben/UltimatePhantomias48.cbr
+echo Collez le lien (Archive.org, Blogspot, Comic Viewer, Direct) ou des mots-clés :
+echo Exemples :
+echo   - Disney Adventures
+echo   - https://archive.org/details/...
+echo   - https://thearabicmagazinmickeymouse.blogspot.com
+echo   - Alben/UltimatePhantomias48.cbr
 echo.
-set /p "BOOK_URI=Lien ou URI : "
-if "%BOOK_URI%"=="" goto menu
-
-set "ARCHIVE_FORMAT=CBR"
-set /p "ARCHIVE_FORMAT=Format [CBR/CBZ, défaut CBR] : "
-if /i not "%ARCHIVE_FORMAT%"=="CBZ" set "ARCHIVE_FORMAT=CBR"
+set /p "TARGET_URL=Lien, URL ou recherche : "
+if "%TARGET_URL%"=="" goto menu
 
 echo.
-node "%~dp0download_web_comic.mjs" "%BOOK_URI%" "%ARCHIVE_FORMAT%"
+node "%~dp0download_url.mjs" "%TARGET_URL%"
 echo.
 pause
 goto menu
@@ -94,24 +92,6 @@ set "TARGET_PATH=%TARGET_PATH:"=%"
 
 echo.
 node "%~dp0repair_and_repack_cbr.mjs" "%TARGET_PATH%"
-echo.
-pause
-goto menu
-
-:blogspot_comic
-cls
-echo ======================================================================
-echo   TÉLÉCHARGEMENT & SCRAPING BLOGSPOT / BLOGGER (HD -^> CBR)
-echo ======================================================================
-echo.
-echo Collez l'URL de l'article ou du blog Blogspot :
-echo Exemple : https://thearabicmagazinmickeymouse.blogspot.com
-echo.
-set /p "BLOG_URL=URL : "
-if "%BLOG_URL%"=="" goto menu
-
-echo.
-node "%~dp0download_blogspot.mjs" "%BLOG_URL%"
 echo.
 pause
 goto menu

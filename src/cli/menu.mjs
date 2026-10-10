@@ -6,12 +6,12 @@ import { spawn, spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { colorize } from '../core/terminal.mjs';
 
-import { downloadWebComic } from '../pipelines/1_acquisition/web_comic.mjs';
-import { crawlBlogspotScans } from '../pipelines/1_acquisition/blogspot.mjs';
+import { runUnifiedAcquisition } from '../pipelines/1_acquisition/unified.mjs';
 import { downloadLinksFile } from '../pipelines/1_acquisition/downloader.mjs';
 import { repairAndRepackToCbz } from '../core/archive.mjs';
 import { syncInducksDatabase, resolveInducksPublication } from '../core/inducks/inducks.mjs';
 import { getCollectionDirectory } from '../pipelines/5_sheets_update/collection_csv.mjs';
+import { syncDriveToInducksCollection } from '../pipelines/4_inducks_collection/sync_drive_to_collection.mjs';
 import { auditDirectory, targetArchivePath, isPathVolumeAccessible } from '../core/config.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -116,30 +116,46 @@ async function showMainMenu() {
   📦 ARCHIVING HELPER - SUITE D'AUTOMATISATION & ARCHIVAGE DE BDS
 ======================================================================
 
-  [1] 🌐 Télécharger un tome depuis un lecteur Web (CBR par défaut, CBZ au choix)
-  [2] 📁 Télécharger les liens depuis files.txt (Multi-sources & aria2c)
-  [3] 🔍 Scanner / Scraper des scans complets depuis un Blogspot
-  [4] 🛠️ Réparer / Désanonymiser une archive ou dossier (Vers CBZ Inducks)
-  [5] 📚 Synchroniser / Tester la base de données Inducks (ISV)
-  [6] 📱 Pipeline Telegram -> Drive (Audit, Écriture, Rapport)
-  [7] 📤 Examiner les paquets Inducks en attente
-  [0] 🚪 Quitter
+  --- 📥 TÉLÉCHARGEMENT & ACQUISITION ---
+  [1]  🌐 Télécharger depuis un lien / URL ou recherche (Archive.org, Blogspot, Direct)
+  [2]  📁 Télécharger les liens depuis files.txt (Multi-sources & aria2c)
+  [3]  📱 Pipeline Telegram -> Drive (Audit, Écriture, Purge doublons)
+
+  --- 🔄 CONVERSION & TRAITEMENT D'IMAGES / ARCHIVES ---
+  [4]  📄 Convertir PDF en JPG / CBZ / CBR (Extraction sans perte)
+  [5]  📚 Convertir CBR en CBZ (Repack RAR -> ZIP sans perte)
+  [6]  🖼️ Convertir WebP en JPG (ImageMagick)
+  [7]  📑 Assembler des images en un seul PDF (ImageMagick)
+  [8]  📂 Extraire et aplatir des archives (CBR, CBZ, RAR, ZIP)
+  [9]  🧹 Supprimer les filigranes d'un PDF (Glénat BAT... 100% sans perte)
+
+  --- 🏛️ GESTION & REGISTRE INDUCKS ---
+  [10] 🛠️ Réparer / Désanonymiser une archive ou dossier (Vers CBZ Inducks)
+  [11] 🔄 Synchroniser Disque D: -> Collection Inducks CSV
+  [12] 📚 Synchroniser la base de données Inducks (ISV locale)
+  [13] 📤 Examiner les paquets Inducks en attente
+
+  [0]  🚪 Quitter
 
 ======================================================================`);
 
-    const choice = (await ask('Votre choix [0-7] : ')).trim();
+    const choice = (await ask('Votre choix [0-13] : ')).trim();
 
     if (choice === '1') {
       clearScreen();
       console.log(`======================================================================`);
-      console.log(`  🌐 TÉLÉCHARGEMENT LECTEUR WEB (HD LOSSLESS)`);
+      console.log(`  🌐 TÉLÉCHARGEMENT UNIFIÉ (Archive.org, Blogspot, Lecteur Web, Direct)`);
       console.log(`======================================================================\n`);
-      const uri = (await ask('Collez l\'URL ou le bookUri (ex: Alben/UltimatePhantomias47.cbr) : ')).trim();
-      if (uri) {
-        const archiveFormat = await askArchiveFormat();
-        console.log('');
+      console.log('Vous pouvez coller :');
+      console.log('  • Une URL ou recherche Archive.org (ex: Disney Adventures, https://archive.org/...)');
+      console.log('  • Une URL Blogspot / Blogger (ex: https://thearabicmagazinmickeymouse.blogspot.com)');
+      console.log('  • Un lien Comic Viewer ou bookUri (ex: Alben/UltimatePhantomias47.cbr)');
+      console.log('  • Un lien direct HTTP/HTTPS (ex: 1fichier, Mediafire...)\n');
+
+      const target = (await ask('Lien, URL ou mots-clés : ')).trim();
+      if (target) {
         try {
-          await downloadWebComic(uri, undefined, null, { archiveFormat });
+          await runUnifiedAcquisition(target, {}, ask);
         } catch (err) {
           console.error(colorize(`\n[!] Erreur : ${err.message}`, 'red'));
         }
@@ -165,55 +181,6 @@ async function showMainMenu() {
       await ask('\nAppuyez sur Entrée pour continuer...');
 
     } else if (choice === '3') {
-      clearScreen();
-      console.log(`======================================================================`);
-      console.log(`  🔍 CRAWLER / SCRAPER BLOGSPOT`);
-      console.log(`======================================================================\n`);
-      const blogUrl = (await ask('Entrez l\'URL du blogspot : ')).trim();
-      if (blogUrl) {
-        try {
-          await crawlBlogspotScans(blogUrl);
-        } catch (err) {
-          console.error(`\n[!] Erreur : ${err.message}`);
-        }
-      }
-      await ask('\nAppuyez sur Entrée pour continuer...');
-
-    } else if (choice === '4') {
-      clearScreen();
-      console.log(`======================================================================`);
-      console.log(`  🛠️ RÉPARATION ET DÉSANONYMISATION CBZ INDUCKS`);
-      console.log(`======================================================================\n`);
-      let inputPath = (await ask('Glissez-déposez le fichier ou dossier ici : ')).trim();
-      inputPath = inputPath.replace(/^["']|["']$/g, '');
-      if (inputPath) {
-        try {
-          await repairAndRepackToCbz(inputPath);
-        } catch (err) {
-          console.error(`\n[!] Erreur : ${err.message}`);
-        }
-      }
-      await ask('\nAppuyez sur Entrée pour continuer...');
-
-    } else if (choice === '5') {
-      clearScreen();
-      console.log(`======================================================================`);
-      console.log(`  📚 BASE DE DONNÉES INDUCKS (SYNC & TEST DE RÉSOLUTION)`);
-      console.log(`======================================================================\n`);
-      try {
-        await syncInducksDatabase(true);
-        const testName = (await ask('Entrez un nom de tome à tester (ex: Picsou Magazine 550) : ')).trim();
-        if (testName) {
-          const res = await resolveInducksPublication(testName);
-          console.log('\nRésultat de la résolution :');
-          console.log(JSON.stringify(res, null, 2));
-        }
-      } catch (err) {
-        console.error(`\n[!] Erreur : ${err.message}`);
-      }
-      await ask('\nAppuyez sur Entrée pour continuer...');
-
-    } else if (choice === '6') {
       clearScreen();
       console.log(`======================================================================`);
       console.log(`  📱 PIPELINE TELEGRAM -> DRIVE`);
@@ -306,6 +273,21 @@ async function showMainMenu() {
 
       if (mode !== '1') {
         console.log(warning);
+        const checkpointFile = path.join(getCollectionDirectory(), '.telegram_checkpoint.json');
+        if (fs.existsSync(checkpointFile)) {
+          try {
+            const checkpointData = JSON.parse(fs.readFileSync(checkpointFile, 'utf8'));
+            if (checkpointData?.last_processed_msg_id) {
+              const resumeAns = (await ask(
+                `  Reprendre après le message #${checkpointData.last_processed_msg_id} ? [O/n] : `
+              )).trim();
+              if (!resumeAns || /^o(ui)?$/i.test(resumeAns)) {
+                runArguments.push('--resume');
+              }
+            }
+          } catch {}
+        }
+
         const limitAnswer = (await ask(
           '  Limiter à combien de messages ? (vide = tous) : '
         )).trim();
@@ -350,7 +332,189 @@ async function showMainMenu() {
       });
       await ask('\nAppuyez sur Entrée pour continuer...');
 
+    } else if (choice === '4') {
+      clearScreen();
+      console.log(`======================================================================`);
+      console.log(`  📄 CONVERSION PDF VERS JPG / CBZ / CBR (EXTRACTION SANS PERTE)`);
+      console.log(`======================================================================\n`);
+      console.log('Extrait les images d\'un ou plusieurs PDF sans réencodage (pdfimages natif).');
+      console.log('Peut compresser automatiquement en archive CBZ ou CBR.\n');
+
+      let inputPath = (await ask('Glissez-déposez le fichier ou dossier PDF : ')).trim();
+      inputPath = inputPath.replace(/^["']|["']$/g, '');
+
+      if (inputPath && fs.existsSync(inputPath)) {
+        const archiveChoice = (await ask('Créer une archive après extraction ? [cbz/cbr/non, défaut: cbz] : ')).trim().toLowerCase();
+        const format = archiveChoice === 'cbr' ? 'cbr' : archiveChoice === 'non' ? '' : 'cbz';
+        const keepChoice = (await ask('Conserver le dossier des images JPG extraites ? (O/N, défaut: N) : ')).trim();
+        const keepJpgs = /^o(ui)?$/i.test(keepChoice);
+
+        const pdfScript = path.join(rootDir, 'convert-pdf-to-jpg', 'pdf-to-jpg.mjs');
+        const args = [pdfScript, inputPath];
+        if (format) args.push('--archive', format);
+        if (keepJpgs) args.push('--keep-jpgs');
+
+        console.log('\n  Traitement en cours...\n');
+        spawnSync(process.execPath, args, { stdio: 'inherit' });
+      } else if (inputPath) {
+        console.log(`\n[!] Chemin introuvable : ${inputPath}`);
+      }
+      await ask('\nAppuyez sur Entrée pour continuer...');
+
+    } else if (choice === '5') {
+      clearScreen();
+      console.log(`======================================================================`);
+      console.log(`  📚 CONVERSION CBR VERS CBZ (REPACK SANS PERTE)`);
+      console.log(`======================================================================\n`);
+      console.log('Décompresse le RAR et réassemble en ZIP/CBZ standard sans altérer les images.\n');
+
+      let inputPath = (await ask('Glissez-déposez le fichier ou dossier CBR : ')).trim();
+      inputPath = inputPath.replace(/^["']|["']$/g, '');
+
+      if (inputPath && fs.existsSync(inputPath)) {
+        const delChoice = (await ask('Supprimer les fichiers .cbr originaux après conversion ? (O/N, défaut: N) : ')).trim();
+        const deleteOriginal = /^o(ui)?$/i.test(delChoice);
+
+        const psScript = path.join(rootDir, 'convert-cbr-to-cbz', 'convert-cbr-to-cbz.ps1');
+        const psArgs = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', psScript];
+        if (deleteOriginal) psArgs.push('-DeleteOriginal');
+        psArgs.push(inputPath);
+
+        console.log('\n  Conversion en cours...\n');
+        spawnSync('powershell.exe', psArgs, { stdio: 'inherit' });
+      } else if (inputPath) {
+        console.log(`\n[!] Chemin introuvable : ${inputPath}`);
+      }
+      await ask('\nAppuyez sur Entrée pour continuer...');
+
+    } else if (choice === '6') {
+      clearScreen();
+      console.log(`======================================================================`);
+      console.log(`  🖼️ CONVERSION WEBP VERS JPG (IMAGEMAGICK)`);
+      console.log(`======================================================================\n`);
+      console.log('Convertit par lot tous les fichiers .webp en images .jpg haute qualité (95%).\n');
+
+      let inputPath = (await ask('Glissez-déposez le fichier ou dossier contenant des WebP : ')).trim();
+      inputPath = inputPath.replace(/^["']|["']$/g, '');
+
+      if (inputPath && fs.existsSync(inputPath)) {
+        const batScript = path.join(rootDir, 'convert-webp-to-jpg', 'convert-webp-to-jpg.bat');
+        console.log('\n  Lancement de la conversion...\n');
+        spawnSync('cmd.exe', ['/c', batScript, inputPath], { stdio: 'inherit' });
+      } else if (inputPath) {
+        console.log(`\n[!] Chemin introuvable : ${inputPath}`);
+      }
+      await ask('\nAppuyez sur Entrée pour continuer...');
+
     } else if (choice === '7') {
+      clearScreen();
+      console.log(`======================================================================`);
+      console.log(`  📑 ASSEMBLER DES IMAGES EN UN SEUL FICHIER PDF`);
+      console.log(`======================================================================\n`);
+      console.log('Regroupe toutes les images d\'un dossier en un document PDF avec tri naturel.\n');
+
+      let inputPath = (await ask('Glissez-déposez le dossier contenant les images : ')).trim();
+      inputPath = inputPath.replace(/^["']|["']$/g, '');
+
+      if (inputPath && fs.existsSync(inputPath)) {
+        const batScript = path.join(rootDir, 'images-to-pdf', 'images-to-pdf.bat');
+        console.log('\n  Génération du PDF en cours...\n');
+        spawnSync('cmd.exe', ['/c', batScript, inputPath], { stdio: 'inherit' });
+      } else if (inputPath) {
+        console.log(`\n[!] Dossier introuvable : ${inputPath}`);
+      }
+      await ask('\nAppuyez sur Entrée pour continuer...');
+
+    } else if (choice === '8') {
+      clearScreen();
+      console.log(`======================================================================`);
+      console.log(`  📂 EXTRACTION ET APLATISSEMENT D'ARCHIVES (CBR, CBZ, RAR, ZIP)`);
+      console.log(`======================================================================\n`);
+      console.log('Extrait automatiquement les archives et aplatit les sous-dossiers inutiles.\n');
+
+      let inputPath = (await ask('Glissez-déposez le fichier ou dossier d\'archives : ')).trim();
+      inputPath = inputPath.replace(/^["']|["']$/g, '');
+
+      if (inputPath && fs.existsSync(inputPath)) {
+        const batScript = path.join(rootDir, 'extract-archives', 'extract-archives.bat');
+        console.log('\n  Extraction en cours...\n');
+        spawnSync('cmd.exe', ['/c', batScript, inputPath], { stdio: 'inherit' });
+      } else if (inputPath) {
+        console.log(`\n[!] Chemin introuvable : ${inputPath}`);
+      }
+      await ask('\nAppuyez sur Entrée pour continuer...');
+
+    } else if (choice === '9') {
+      clearScreen();
+      console.log(`======================================================================`);
+      console.log(`  🧹 SUPPRESSION DE FILIGRANES PDF (SANS PERTE / SANS RÉENCODAGE)`);
+      console.log(`======================================================================\n`);
+      console.log('Supprime les filigranes vectoriels, textes, et calques (Glénat, Spécimen, etc.)');
+      console.log('Les images originales de la BD restent 100% intactes à l\'octet près.\n');
+
+      let targetPdf = (await ask('Glissez-déposez le fichier PDF à nettoyer : ')).trim();
+      targetPdf = targetPdf.replace(/^["']|["']$/g, '');
+
+      if (targetPdf && fs.existsSync(targetPdf)) {
+        const python = resolvePython() || 'python';
+        const removerScript = path.join(rootDir, 'src', 'core', 'pdf_watermark_remover.py');
+        console.log('\n  Nettoyage chirurgical en cours...\n');
+        const res = spawnSync(python.command || python, [...(python.args || []), removerScript, targetPdf], {
+          stdio: 'inherit',
+          env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+        });
+        if (res.error) {
+          console.error(`\n[!] Erreur lors de l'exécution : ${res.error.message}`);
+        }
+      } else if (targetPdf) {
+        console.log(`\n[!] Fichier introuvable : ${targetPdf}`);
+      }
+      await ask('\nAppuyez sur Entrée pour continuer...');
+
+    } else if (choice === '10') {
+      clearScreen();
+      console.log(`======================================================================`);
+      console.log(`  🛠️ RÉPARATION ET DÉSANONYMISATION CBZ INDUCKS`);
+      console.log(`======================================================================\n`);
+      let inputPath = (await ask('Glissez-déposez le fichier ou dossier ici : ')).trim();
+      inputPath = inputPath.replace(/^["']|["']$/g, '');
+      if (inputPath) {
+        try {
+          await repairAndRepackToCbz(inputPath);
+        } catch (err) {
+          console.error(`\n[!] Erreur : ${err.message}`);
+        }
+      }
+      await ask('\nAppuyez sur Entrée pour continuer...');
+
+    } else if (choice === '11') {
+      clearScreen();
+      try {
+        await syncDriveToInducksCollection();
+      } catch (err) {
+        console.error(`\n[!] Erreur lors de la synchronisation : ${err.message}`);
+      }
+      await ask('\nAppuyez sur Entrée pour continuer...');
+
+    } else if (choice === '12') {
+      clearScreen();
+      console.log(`======================================================================`);
+      console.log(`  📚 BASE DE DONNÉES INDUCKS (SYNC & TEST DE RÉSOLUTION)`);
+      console.log(`======================================================================\n`);
+      try {
+        await syncInducksDatabase(true);
+        const testName = (await ask('Entrez un nom de tome à tester (ex: Picsou Magazine 550) : ')).trim();
+        if (testName) {
+          const res = await resolveInducksPublication(testName);
+          console.log('\nRésultat de la résolution :');
+          console.log(JSON.stringify(res, null, 2));
+        }
+      } catch (err) {
+        console.error(`\n[!] Erreur : ${err.message}`);
+      }
+      await ask('\nAppuyez sur Entrée pour continuer...');
+
+    } else if (choice === '13') {
       clearScreen();
       const pendingDirectory = path.join(getCollectionDirectory(), 'inducks_upload_pending');
       console.log('======================================================================');
@@ -376,7 +540,6 @@ async function showMainMenu() {
           }
         }
       }
-
       await ask('\nAppuyez sur Entrée pour continuer...');
 
     } else if (choice === '0') {

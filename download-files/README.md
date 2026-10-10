@@ -8,9 +8,10 @@ Lightweight, ultra-fast download manager and post-processing pipeline designed t
 - 📦 **Filecrypt & Container Support**:
   - **Click'n'Load (CNL2) Server**: Runs a lightweight local Click'n'Load receiver on port `9666`. Click "Click'n'Load" on Filecrypt in your browser and downloads start instantly!
   - **DLC Container Decryption**: Drag & drop any `.dlc` container file to decrypt and download all files.
-- 🔗 **Direct Host Support**:
+- 🔗 **Direct Host & Archive Support**:
+  - **Archive.org**: Extraction & batch download from search URLs, item links, collections, or keywords (with smart PDF scan HD / OCR / CBZ selection).
   - **1fichier**: Automatic link resolver (handles free download flow + API key support).
-  - **Direct HTTP/HTTPS**: Fast multi-threaded stream with progress tracking, speed, ETA, and resume support.
+  - **Mediafire & Direct HTTP/HTTPS**: Fast multi-threaded stream with progress tracking, speed, ETA, and resume support.
 - 🔄 **Integrated Post-Processing Pipeline**:
   - **Auto-Extract**: Automatically unpacks CBR, CBZ, ZIP, RAR, 7z archives with smart single-folder flattening.
   - **Auto-Convert**: Optionally converts extracted PDF files into lossless CBZ/JPG via `convert-pdf-to-jpg`.
@@ -50,6 +51,10 @@ node .\download.mjs --watch "C:\Users\starl\Downloads"
 
 # Full comic pipeline: Download -> Extract -> Convert PDFs -> Delete raw archives
 node .\download.mjs "links.txt" --auto-extract --auto-convert --clean-archives
+
+# Archive.org Downloader (Search, Item or Collection)
+node .\download_archive_org.mjs "https://archive.org/search?query=Disney+Adventures&tab=all"
+node .\download_archive_org.mjs "Disney Adventures" --format hd --convert-cbz
 ```
 
 ## Options

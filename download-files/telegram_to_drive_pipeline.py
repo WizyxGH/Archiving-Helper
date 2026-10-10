@@ -29,10 +29,13 @@ import tempfile
 import argparse
 import asyncio
 import subprocess
-from dataclasses import dataclass, field
-from datetime import datetime
+import time
+import hashlib
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, Optional, Set
+
 
 # ==============================================================================
 # Nommage des dossiers de publication
@@ -179,7 +182,6 @@ _enable_timestamped_stdout()
 
 try:
     from telethon import TelegramClient
-    from telethon.tl.types import DocumentAttributeFilename, Message
     from telethon.errors import SessionPasswordNeededError
 except ImportError:
     print(failure("[ERREUR] Telethon est requis. Installez-le via : pip install telethon"), flush=True)
@@ -299,7 +301,12 @@ class PipelineConfig:
     # Telegram émet plusieurs blocs par seconde : sans regroupement la ligne est
     # réécrite des centaines de fois et le défilement devient illisible.
     # 5 % est un bon compromis ; 0 désactive complètement la barre.
-    progress_step_pct: int = 5
+    progress_step_pct: int = 1
+    resume: bool = False
+    from_id: Optional[int] = None
+    concurrency: int = 3
+    skip_deanonymize: bool = False
+    deanonymize_until: Optional[int] = None
 
     @classmethod
     def from_env(cls, env_path: Optional[Path] = None, **overrides) -> "PipelineConfig":
@@ -336,7 +343,7 @@ class PipelineConfig:
         )
         audit_file = Path(audit_raw) / "audit_skipped_files.csv"
 
-        # Palier de progression : .env > variable d'environnement > défaut 5.
+        # Palier de progression : .env > variable d'environnement > défaut 1.
         # Une valeur invalide ou négative retombe sur le défaut plutôt que de
         # planter le pipeline au démarrage.
         progress_raw = (
@@ -347,9 +354,38 @@ class PipelineConfig:
         try:
             progress_step_pct = int(str(progress_raw))
             if progress_step_pct < 0:
-                progress_step_pct = 5
+                progress_step_pct = 1
         except (TypeError, ValueError):
-            progress_step_pct = 5
+            progress_step_pct = 1
+
+        concurrency_raw = (
+            overrides.get("concurrency")
+            or os.getenv("TELEGRAM_CONCURRENCY")
+            or env_vars.get("TELEGRAM_CONCURRENCY")
+            or 3
+        )
+        try:
+            concurrency = max(1, int(concurrency_raw))
+        except (TypeError, ValueError):
+            concurrency = 3
+
+        skip_deanonymize_raw = (
+            overrides.get("skip_deanonymize")
+            or os.getenv("TELEGRAM_SKIP_DEANONYMIZE")
+            or env_vars.get("TELEGRAM_SKIP_DEANONYMIZE")
+        )
+        skip_deanonymize = str(skip_deanonymize_raw).strip().lower() in ("1", "true", "yes")
+
+        deanonymize_until_raw = (
+            overrides.get("deanonymize_until")
+            or os.getenv("TELEGRAM_DEANONYMIZE_UNTIL")
+            or env_vars.get("TELEGRAM_DEANONYMIZE_UNTIL")
+            or 2867
+        )
+        try:
+            deanonymize_until = int(deanonymize_until_raw) if deanonymize_until_raw is not None else 2867
+        except (TypeError, ValueError):
+            deanonymize_until = 2867
 
         return cls(
             target_root=target_root,
@@ -362,7 +398,12 @@ class PipelineConfig:
             limit=overrides.get("limit"),
             delete_identical_duplicates=overrides.get("delete_identical_duplicates", True),
             purge_identical_only=overrides.get("purge_identical_only", False),
-            progress_step_pct=progress_step_pct
+            progress_step_pct=progress_step_pct,
+            resume=overrides.get("resume", False),
+            from_id=overrides.get("from_id"),
+            concurrency=concurrency,
+            skip_deanonymize=skip_deanonymize,
+            deanonymize_until=deanonymize_until,
         )
 
 # ==============================================================================
@@ -384,61 +425,108 @@ def format_size(bytes_val: int) -> str:
     return f"{bytes_val} B"
 
 
-# Téléchargement : dernier palier affiché, pour ne pas rafraîchir la ligne
-# à chaque bloc reçu (Telegram en émet plusieurs par seconde).
-_last_progress = {"key": None, "value": -1}
+_active_progress: Dict[str, dict] = {}
+_last_render_time: float = 0.0
+_progress_enabled: bool = True
 
 
 def set_progress_step(pct: int) -> None:
     """Fixe le palier de rafraîchissement de la barre (0 = désactivée)."""
-    _last_progress["step"] = max(int(pct), 0)
-    _last_progress["key"] = None
+    global _progress_enabled
+    _progress_enabled = (pct > 0)
+    _active_progress.clear()
 
 
 def report_progress(progress: str, current: int, total: int) -> None:
-    """Affiche l'avancement du téléchargement, une fois par palier de %.
-
-    Sans cela, un tome de 30 Mo peut laisser l'écran muet plusieurs minutes
-    et donner l'impression que le script est bloqué. Le palier vient de la
-    configuration (PROGRESS_STEP_PCT, défaut 5 %) : au-delà, la ligne est
-    réécrite trop souvent et le défilement devient illisible.
-    """
-    step_pct = _last_progress.get("step", 5)
-    if step_pct == 0:
+    """Affiche l'avancement du téléchargement (monotâche ou multitâche simultané)."""
+    global _last_render_time
+    if not _progress_enabled or not total:
         return
 
-    if not total:
+    now = time.time()
+    info = _active_progress.get(progress)
+    if not info:
+        info = {
+            "t0": now,
+            "current": current,
+            "total": total,
+            "last_bytes": current,
+            "last_t": now,
+            "speed": 0.0
+        }
+        _active_progress[progress] = info
+    else:
+        info["current"] = current
+        info["total"] = total
+        dt = now - info["last_t"]
+        if dt >= 0.35:
+            db = current - info["last_bytes"]
+            info["speed"] = max(0.0, db / dt)
+            info["last_bytes"] = current
+            info["last_t"] = now
+
+    if current >= total:
+        _active_progress.pop(progress, None)
+
+    # Cadencement à 80 ms pour fluidité sans saturer le terminal
+    if (now - _last_render_time) < 0.08 and current < total:
+        return
+    _last_render_time = now
+
+    if not _active_progress:
         return
 
-    percent = int(current * 100 / total)
-    # On force l'affichage a 0 % et a chaque palier atteint. Le max(..., 1)
-    # d'origine divisait par 1 en dessous du premier palier, donc la ligne
-    # etait reecrite a chaque pourcent sur le premier quart du telechargement.
-    step = percent // step_pct
+    if len(_active_progress) == 1:
+        prog_id, d = next(iter(_active_progress.items()))
+        cur = d["current"]
+        tot = d["total"]
+        pct = (cur * 100.0) / tot if tot else 0.0
+        spd = d.get("speed", 0.0)
+        speed_text = f" • {format_size(spd)}/s" if spd > 0 else ""
 
-    key = (progress, step)
-    if key == _last_progress["key"]:
-        return
-    _last_progress["key"] = key
+        bar_width = 16
+        filled = min(int((cur / tot) * bar_width), bar_width) if tot else 0
+        bar = "█" * filled + "░" * (bar_width - filled)
+        bar_color = "green" if pct >= 90 else "yellow" if pct >= 40 else "cyan"
 
-    filled = int(percent / 4)
-    bar = "█" * filled + "░" * (25 - filled)
-    bar_color = "green" if percent >= 90 else "yellow" if percent >= 40 else "cyan"
+        sys.stdout.write(
+            f"\r      {dim(prog_id)} {colorize(bar, bar_color)} "
+            f"{colorize(f'{pct:5.1f} %', 'bold')} "
+            f"{dim(f'({format_size(cur)} / {format_size(tot)}{speed_text})')}\033[K"
+        )
+    else:
+        items = []
+        total_speed = 0.0
+        for prog_id, d in list(_active_progress.items()):
+            cur = d["current"]
+            tot = d["total"]
+            pct = (cur * 100.0) / tot if tot else 0.0
+            spd = d.get("speed", 0.0)
+            total_speed += spd
+            items.append(f"{prog_id}: {pct:4.1f}%")
 
-    sys.stdout.write(
-        f"\r      {dim(progress)} {colorize(bar, bar_color)} "
-        f"{colorize(f'{percent:3d} %', 'bold')} "
-        f"{dim(f'({format_size(current)} / {format_size(total)})')}"
-    )
+        summary = " | ".join(items)
+        tot_speed_text = f" • Total: {format_size(total_speed)}/s" if total_speed > 0 else ""
+        sys.stdout.write(
+            f"\r      {dim(f'[{len(_active_progress)}x]')} {colorize(summary, 'bold')}"
+            f"{dim(tot_speed_text)}\033[K"
+        )
     sys.stdout.flush()
 
 
 def reset_progress_line() -> None:
-    """Referme la ligne d'avancement avant d'afficher la suite."""
-    if _last_progress["key"] is not None:
-        sys.stdout.write("\n")
-        sys.stdout.flush()
-        _last_progress["key"] = None
+    """Efface la ligne d'avancement active sans supprimer les données de suivi."""
+    sys.stdout.write("\r\033[K")
+    sys.stdout.flush()
+
+
+def log_print(*args, **kwargs) -> None:
+    """Affiche un message en effaçant proprement la ligne de progression active."""
+    sep = kwargs.get("sep", " ")
+    end = kwargs.get("end", "\n")
+    text = sep.join(str(a) for a in args)
+    sys.stdout.write(f"\r\033[K{text}{end}")
+    sys.stdout.flush()
 
 
 def write_run_log(config: "PipelineConfig", stats: dict) -> None:
@@ -498,6 +586,20 @@ def clean_stem(filename: str) -> str:
     while p.suffix.lower() in SUPPORTED_EXTENSIONS:
         p = Path(p.stem)
     return p.name
+
+
+def is_canonical_inducks_name(filename_or_stem: str) -> bool:
+    """Vérifie si le nom respecte déjà la norme officielle Inducks (<pays>_<code_pub>_<num>).
+    Exemple: 'fr_DDD_1.cbr', 'ca_OP_4.cbr', 'uk_DLAI_1969.cbr', 'us_CBCO_10.cbr'.
+    Si oui, le tome est déjà parfaitement identifié : aucune désanonymisation interne requise.
+    """
+    stem = clean_stem(filename_or_stem)
+    parts = stem.split("_")
+    if len(parts) >= 3:
+        country = parts[0].lower()
+        if country in DEFAULT_COUNTRY_MAP:
+            return True
+    return False
 
 def natural_keys(text: str):
     """Sorting key that handles human natural page order (e.g., 1, 2, ... 9, 10, 100)."""
@@ -837,6 +939,117 @@ class AuditLogger:
             writer = csv.DictWriter(f, fieldnames=self.FIELDNAMES)
             writer.writerow(entry)
 
+
+def compute_sha256(filepath: Path) -> str:
+    """Calcule l'empreinte SHA256 d'un fichier de façon rapide et streamée."""
+    h = hashlib.sha256()
+    with open(filepath, "rb") as f:
+        while chunk := f.read(1024 * 1024):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def natural_sort_key(s: str) -> list:
+    """Clé de tri naturel alphanumérique pour aligner les enregistrements."""
+    return [int(text) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', str(s))]
+
+
+def update_collection_csv_record(
+    archive_path: Path,
+    config: "PipelineConfig",
+    catalog: Optional["InducksCatalog"] = None,
+    sha256_hash: Optional[str] = None,
+) -> None:
+    """Met à jour directement le fichier inducks_collection.csv et .inducks_collection.json en Python (< 5 ms)."""
+    if not archive_path.exists() or archive_path.stat().st_size == 0:
+        return
+
+    collection_dir = config.audit_file.parent
+    collection_dir.mkdir(parents=True, exist_ok=True)
+    registry_path = collection_dir / ".inducks_collection.json"
+    csv_path = collection_dir / "inducks_collection.csv"
+
+    registry: Dict[str, dict] = {}
+    if registry_path.exists():
+        try:
+            with open(registry_path, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    registry = loaded
+        except Exception:
+            registry = {}
+
+    canonical_stem = clean_stem(archive_path.name)
+    archive_format = archive_path.suffix.lstrip(".").lower()
+    collection_key = f"{canonical_stem}|{archive_format}"
+
+    m = re.match(r"^([a-z]{2,3})_([A-Za-z0-9]+)_(.*)$", canonical_stem, re.I)
+    country_code = m.group(1).lower() if m else ""
+    pub_code = m.group(2).upper() if m else ""
+    issue_number = m.group(3) if m else ""
+    pub_title = ""
+    if catalog and m:
+        pub_title = catalog.publication_titles.get(f"{country_code}_{pub_code}", "")
+
+    # Utilise l'empreinte calculée à la volée pendant le téléchargement (0 lecture disque supplémentaire)
+    if not sha256_hash:
+        sha256_hash = compute_sha256(archive_path)
+    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+    record = {
+        "collection_key": collection_key,
+        "canonical_stem": canonical_stem,
+        "inducks_issue_code": f"{country_code}/{pub_code}{issue_number}" if country_code and pub_code else "",
+        "country": country_code,
+        "publication": pub_code,
+        "issue_number": issue_number,
+        "format": archive_format,
+        "archive_path": str(archive_path.resolve()),
+        "image_count": registry.get(collection_key, {}).get("image_count", ""),
+        "sha256": sha256_hash,
+        "status": "registered_without_upload_bundle",
+        "comment": registry.get(collection_key, {}).get("comment", "") or registry.get(collection_key, {}).get("notes", "") or registry.get(collection_key, {}).get("private_comments", ""),
+        "updated_at": now_iso,
+    }
+
+    registry[collection_key] = record
+
+    # Écriture atomique JSON
+    temp_registry = registry_path.with_suffix(f".tmp.{os.getpid()}")
+    with open(temp_registry, "w", encoding="utf-8") as f:
+        json.dump(registry, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+    temp_registry.replace(registry_path)
+
+    # Écriture atomique CSV
+    columns = [
+        "canonical_stem",
+        "inducks_issue_code",
+        "country",
+        "publication",
+        "issue_number",
+        "format",
+        "archive_path",
+        "archive_size_bytes",
+        "image_count",
+        "sha256",
+        "status",
+        "comment",
+        "updated_at",
+    ]
+
+    records = list(registry.values())
+    records.sort(key=lambda r: (natural_sort_key(r.get("canonical_stem", "")), str(r.get("format", ""))))
+
+    temp_csv = csv_path.with_suffix(f".tmp.{os.getpid()}")
+    with open(temp_csv, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f, quoting=csv.QUOTE_ALL, lineterminator="\r\n")
+        writer.writerow(columns)
+        for rec in records:
+            writer.writerow([rec.get(col, "") for col in columns])
+    temp_csv.replace(csv_path)
+
+
 # ==============================================================================
 # Telegram Pipeline Orchestrator
 # ==============================================================================
@@ -848,7 +1061,55 @@ class TelegramArchivePipeline:
         self._validate_storage()
         self.catalog = InducksCatalog(config.target_root)
         self.audit = AuditLogger(config.audit_file)
+        self.checkpoint_file = self.config.audit_file.parent / ".telegram_checkpoint.json"
         self.client: Optional[TelegramClient] = None
+        self.csv_lock = asyncio.Lock()
+        self.checkpoint_lock = asyncio.Lock()
+        self._all_seen_ids: list = []
+        self._completed_ids: set = set()
+
+    def load_checkpoint(self) -> Optional[int]:
+        """Charge le dernier ID de message traité depuis le fichier checkpoint."""
+        if not self.checkpoint_file.exists():
+            return None
+        try:
+            with open(self.checkpoint_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data.get("last_processed_msg_id")
+        except Exception:
+            return None
+
+    def save_checkpoint(self, msg_id: int):
+        """Mémorise le dernier ID de message Telegram traité avec succès."""
+        if self.config.dry_run:
+            return
+        try:
+            self.checkpoint_file.parent.mkdir(parents=True, exist_ok=True)
+            data = {
+                "last_processed_msg_id": msg_id,
+                "updated_at": datetime.now(timezone.utc).isoformat()
+            }
+            tmp = self.checkpoint_file.with_suffix(f".tmp.{os.getpid()}")
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+            tmp.replace(self.checkpoint_file)
+        except Exception:
+            pass
+
+    async def record_checkpoint(self, msg_id: int):
+        """Met à jour le checkpoint avec le plus grand ID continu garanti traité."""
+        if self.config.dry_run:
+            return
+        async with self.checkpoint_lock:
+            self._completed_ids.add(msg_id)
+            safe_id = None
+            for seen_id in self._all_seen_ids:
+                if seen_id in self._completed_ids:
+                    safe_id = seen_id
+                else:
+                    break
+            if safe_id is not None:
+                self.save_checkpoint(safe_id)
 
     def _validate_storage(self):
         """Vérifie l'accessibilité du support de stockage cible."""
@@ -885,6 +1146,22 @@ class TelegramArchivePipeline:
                 pwd = input("Enter 2FA Password: ").strip()
                 await self.client.sign_in(password=pwd)
 
+    def should_deanonymize(self, msg_id: int, raw_filename: str) -> bool:
+        """Détermine si le tome nécessite une inspection interne d'archive.
+        
+        Sauté si:
+        - --skip-deanonymize est activé
+        - msg_id > deanonymize_until
+        - Le nom de fichier est déjà un code Inducks officiel (ex: fr_DDD_1.cbr, uk_DLAI_1969.cbr)
+        """
+        if self.config.skip_deanonymize:
+            return False
+        if self.config.deanonymize_until is not None and msg_id > self.config.deanonymize_until:
+            return False
+        if is_canonical_inducks_name(raw_filename):
+            return False
+        return True
+
     async def purge_message(self, entity, msg_id: int, stats: dict, duplicate: bool = True) -> bool:
         """Supprime le message Telegram si, et seulement si, la purge est active.
 
@@ -892,14 +1169,17 @@ class TelegramArchivePipeline:
         audit), aucun message n'est jamais supprime, meme pour un doublon prouve.
         """
         if self.config.dry_run or not self.config.delete_identical_duplicates:
-            print(dim(f"          [4/4] Message Telegram #{msg_id} conserve (purge desactivee)"), flush=True)
+            log_print(dim(f"          [4/4] #{msg_id} Message Telegram conserve (purge desactivee)"))
             return False
-        print(warn(f"          [4/4] Suppression du message Telegram #{msg_id}..."), end="", flush=True)
-        await self.client.delete_messages(entity, msg_id)
-        print(" OK", flush=True)
-        if duplicate:   # le bilan ne compte en « doublons purges » que les doublons
-            stats["purged"] = stats.get("purged", 0) + 1
-        return True
+        try:
+            await self.client.delete_messages(entity, msg_id)
+            log_print(warn(f"          [4/4] #{msg_id} Message Telegram supprime"))
+            if duplicate:
+                stats["purged"] = stats.get("purged", 0) + 1
+            return True
+        except Exception as err:
+            log_print(failure(f"          [!] #{msg_id} Echec suppression Telegram: {err}"))
+            return False
 
     async def resolve_channel(self, channel_input: str):
         """Resolves channel entity supporting usernames, IDs, and private invite links."""
@@ -927,6 +1207,255 @@ class TelegramArchivePipeline:
             return await self.client.get_entity(int(channel_input))
         return await self.client.get_entity(channel_input)
 
+    async def process_tome(self, entity, message, progress_str: str, stats: dict) -> None:
+        """Télécharge, désanonymise si nécessaire, valide et archive un tome individuel."""
+        msg_id = message.id
+        raw_filename = message.file.name or f"file_{msg_id}"
+        file_size = message.file.size or 0
+        tg_ext = Path(raw_filename).suffix.lower()
+
+        canonical_name = raw_filename if tg_ext in SUPPORTED_EXTENSIONS else f"{clean_stem(raw_filename)}.cbr"
+        is_canonical = is_canonical_inducks_name(raw_filename)
+
+        if is_canonical:
+            log_print(colorize(f"[*] #{msg_id} {canonical_name} ({format_size(file_size)})...", "cyan"))
+        else:
+            log_print(colorize(f"[*] #{msg_id} {raw_filename} ({format_size(file_size)}) [scan en-tete 512 Ko]...", "cyan"))
+
+        try:
+            self.config.staging_dir.mkdir(parents=True, exist_ok=True)
+            issue_temp_dir = self.config.staging_dir / f"temp_{msg_id}"
+            issue_temp_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            fallback_staging = Path(tempfile.gettempdir()) / "archiving-helper" / "_staging_temp"
+            try:
+                fallback_staging.mkdir(parents=True, exist_ok=True)
+                self.config.staging_dir = fallback_staging
+                issue_temp_dir = self.config.staging_dir / f"temp_{msg_id}"
+                issue_temp_dir.mkdir(parents=True, exist_ok=True)
+                log_print(colorize(f"          [*] #{msg_id} Staging redirige vers : {fallback_staging}", "yellow"))
+            except Exception as fatal_err:
+                stats["errors"] += 1
+                log_print(failure(f"    [ERREUR STOCKAGE] #{msg_id} Impossible de creer le dossier temporaire : {fatal_err}"))
+                await self.record_checkpoint(msg_id)
+                return
+
+        try:
+            local_staging_file = issue_temp_dir / raw_filename
+            early_exit: Dict[str, object] = {"stem": None, "path": None, "probed": False, "existing_size": 0}
+            file_hasher = hashlib.sha256()
+            check_probe = self.should_deanonymize(msg_id, raw_filename)
+
+            for attempt in range(1, 3):
+                try:
+                    early_exit["probed"] = False
+                    file_hasher = hashlib.sha256()
+                    with open(local_staging_file, "wb") as f_out:
+                        async with self.client.iter_download(message.media, request_size=512 * 1024) as stream:
+                            received = 0
+                            async for chunk in stream:
+                                f_out.write(chunk)
+                                file_hasher.update(chunk)
+                                received += len(chunk)
+                                report_progress(progress_str, received, file_size)
+
+                                if check_probe and not early_exit["probed"] and received >= HEADER_PROBE_BYTES and file_size > 0:
+                                    early_exit["probed"] = True
+                                    f_out.flush()
+                                    def _probe_lookup(fpath: Path, fsz: int):
+                                        st = identify_inducks_stem_from_header(fpath)
+                                        if not st:
+                                            return None
+                                        kn = self.catalog.find_duplicate(f"{st}.cbr")
+                                        if not kn:
+                                            cn = official_stem(st)
+                                            if cn != st:
+                                                kn = self.catalog.find_duplicate(f"{cn}.cbr")
+                                        if not kn:
+                                            kn_sz = self.catalog.files_by_size.get(fsz)
+                                            if kn_sz and not kn_sz.get("ambiguous"):
+                                                kn = kn_sz
+                                        if kn:
+                                            return (st, kn["path"], kn["size"])
+                                        return None
+
+                                    probe_res = await asyncio.to_thread(_probe_lookup, local_staging_file, file_size)
+                                    if probe_res:
+                                        early_exit["stem"], early_exit["path"], early_exit["existing_size"] = probe_res
+                                        break
+                    break
+                except (PermissionError, OSError) as dl_err:
+                    if attempt < 2 and getattr(dl_err, "errno", None) == 13:
+                        reset_progress_line()
+                        log_print(warn(f"      [*] #{msg_id} Verrouillage temporaire Windows (Errno 13), nouvel essai dans 2 s..."))
+                        await asyncio.sleep(2)
+                        continue
+                    raise
+
+            if early_exit["stem"] is not None:
+                existing = early_exit["path"]
+                assert isinstance(existing, Path)
+                existing_sz = int(early_exit.get("existing_size") or (existing.stat().st_size if existing.exists() else file_size))
+                reset_progress_line()
+                gained = file_size - HEADER_PROBE_BYTES
+                diff = existing_sz - file_size
+                notes = "taille identique" if diff == 0 else f"taille diff (Drive {format_size(existing_sz)})"
+                log_print(
+                    dim(
+                        f"  [DOUBLON] #{msg_id} {existing.name} deja sur le Drive ({notes}) "
+                        f"• Interrompu a 512 Ko ({format_size(gained)} economises)"
+                    )
+                )
+                if diff == 0:
+                    await self.purge_message(entity, msg_id, stats)
+                else:
+                    log_print(dim(f"            [i] #{msg_id} Message Telegram conserve car fichier different."))
+                stats["skipped"] += 1
+                self.audit.log({
+                    "timestamp": str(message.date),
+                    "telegram_msg_id": msg_id,
+                    "telegram_filename": raw_filename,
+                    "canonical_name": existing.name,
+                    "telegram_ext": tg_ext,
+                    "drive_ext": existing.suffix.lower(),
+                    "telegram_size_bytes": file_size,
+                    "telegram_size_mb": round(file_size / (1024 * 1024), 2),
+                    "drive_path": str(existing),
+                    "drive_size_bytes": existing_sz,
+                    "drive_size_mb": round(existing_sz / (1024 * 1024), 2),
+                    "size_diff_bytes": diff,
+                    "status": "SKIPPED_EXISTING_HEADER_PROBE",
+                    "audit_notes": f"Interrompu a 512 Ko [{notes}]"
+                })
+                await self.record_checkpoint(msg_id)
+                return
+
+            local_sz = local_staging_file.stat().st_size
+            reset_progress_line()
+
+            # Désanonymisation conditionnelle
+            if self.should_deanonymize(msg_id, raw_filename):
+                def _resolve_archive(fpath: Path, cname: str):
+                    det = inspect_archive_for_inducks_name(fpath)
+                    rec = clean_stem(cname)
+                    fin = official_stem(det or rec)
+                    return (det, rec, fin)
+
+                detected_stem, received_stem, final_stem = await asyncio.to_thread(_resolve_archive, local_staging_file, canonical_name)
+                renamed = final_stem != received_stem
+                if renamed:
+                    canonical_name = f"{final_stem}{Path(canonical_name).suffix}"
+                    label = "Desanonymise" if detected_stem else "Nom Inducks"
+                    log_print(colorize(f"          [*] #{msg_id} {label} : {raw_filename} -> {canonical_name}", "magenta"))
+
+                    post_dup = self.catalog.find_duplicate(canonical_name)
+                    if post_dup and post_dup["path"].exists():
+                        drive_sz = post_dup["size"]
+                        diff = drive_sz - local_sz
+                        notes = "taille identique" if diff == 0 else f"taille diff (Drive {format_size(drive_sz)})"
+                        log_print(dim(f"  [DOUBLON] #{msg_id} {canonical_name} deja sur le Drive ({notes})"))
+                        if diff == 0:
+                            await self.purge_message(entity, msg_id, stats)
+                        else:
+                            log_print(dim(f"            [i] #{msg_id} Message Telegram conserve car fichier different."))
+                        stats["skipped"] += 1
+                        self.audit.log({
+                            "timestamp": str(message.date),
+                            "telegram_msg_id": msg_id,
+                            "telegram_filename": raw_filename,
+                            "canonical_name": canonical_name,
+                            "telegram_ext": tg_ext,
+                            "drive_ext": post_dup.get("ext", Path(post_dup["path"]).suffix.lower()),
+                            "telegram_size_bytes": file_size,
+                            "telegram_size_mb": round(file_size / (1024 * 1024), 2),
+                            "drive_path": str(post_dup["path"]),
+                            "drive_size_bytes": drive_sz,
+                            "drive_size_mb": round(drive_sz / (1024 * 1024), 2),
+                            "size_diff_bytes": diff,
+                            "status": "SKIPPED_EXISTING_POST_DEANONYMIZED",
+                            "audit_notes": f"Deja present [{notes}]"
+                        })
+                        await self.record_checkpoint(msg_id)
+                        return
+
+            # Vérification du format réel
+            real_ext = archive_extension_from_content(local_staging_file)
+            if real_ext and Path(canonical_name).suffix.lower() != real_ext:
+                canonical_name = f"{Path(canonical_name).stem}{real_ext}"
+                log_print(colorize(f"          [*] #{msg_id} Format reel -> {canonical_name}", "magenta"))
+
+            target_folder = self.catalog.resolve_destination(canonical_name)
+            final_cbr_path = target_folder / canonical_name
+            target_folder.mkdir(parents=True, exist_ok=True)
+
+            # Vérification doublon à destination (sans écrasement)
+            if final_cbr_path.exists():
+                existing_sz = final_cbr_path.stat().st_size
+                diff = existing_sz - local_sz
+                notes = "taille identique" if diff == 0 else f"taille diff (Drive {format_size(existing_sz)})"
+                log_print(dim(f"  [DOUBLON] #{msg_id} {canonical_name} deja present a destination ({notes}) — non ecrase."))
+                if diff == 0:
+                    await self.purge_message(entity, msg_id, stats)
+                else:
+                    log_print(dim(f"            [i] #{msg_id} Message Telegram conserve car fichier different."))
+                stats["skipped"] += 1
+                self.audit.log({
+                    "timestamp": str(message.date),
+                    "telegram_msg_id": msg_id,
+                    "telegram_filename": raw_filename,
+                    "canonical_name": canonical_name,
+                    "telegram_ext": tg_ext,
+                    "drive_ext": final_cbr_path.suffix.lower(),
+                    "telegram_size_bytes": file_size,
+                    "telegram_size_mb": round(file_size / (1024 * 1024), 2),
+                    "drive_path": str(final_cbr_path),
+                    "drive_size_bytes": existing_sz,
+                    "drive_size_mb": round(existing_sz / (1024 * 1024), 2),
+                    "size_diff_bytes": diff,
+                    "status": "SKIPPED_EXISTING_AT_DESTINATION",
+                    "audit_notes": f"Deja sur le Drive [{notes}]"
+                })
+                await self.record_checkpoint(msg_id)
+                return
+
+            # C'est un nouveau tome validé
+            log_print(colorize(f"[NOUVEAU] #{msg_id} {canonical_name} ({format_size(local_sz)})", "green+bold"))
+            log_print(success(f"          -> Valide a destination : {final_cbr_path.relative_to(self.config.target_root)}"))
+
+            # Déplacement instantané sur le volume D:
+            try:
+                shutil.move(str(local_staging_file), str(final_cbr_path))
+            except OSError:
+                shutil.copy2(str(local_staging_file), str(final_cbr_path))
+
+            if not final_cbr_path.exists() or final_cbr_path.stat().st_size == 0:
+                raise RuntimeError("Echec integrite : le fichier depose est vide ou absent.")
+
+            downloaded_sha256 = file_hasher.hexdigest()
+            async with self.csv_lock:
+                try:
+                    update_collection_csv_record(final_cbr_path, self.config, self.catalog, sha256_hash=downloaded_sha256)
+                    log_print(colorize(f"          [+] #{msg_id} Collection CSV actualisee", "green"))
+                except Exception as csv_err:
+                    log_print(warn(f"          [!] #{msg_id} Note collection CSV : {csv_err}"))
+
+                self.catalog.files_by_name[canonical_name.lower()] = {"path": final_cbr_path, "size": final_cbr_path.stat().st_size}
+                self.catalog.files_by_stem[clean_stem(canonical_name).lower()] = {"path": final_cbr_path, "size": final_cbr_path.stat().st_size}
+
+            await self.purge_message(entity, msg_id, stats, duplicate=False)
+            stats["processed"] += 1
+            await self.record_checkpoint(msg_id)
+
+        except Exception as err:
+            stats["errors"] += 1
+            reset_progress_line()
+            log_print(failure(f"    [ERREUR SECURITE] Tome #{msg_id} non archive : {err}"))
+            log_print(dim("                 -> Message Telegram PRESERVE (aucune suppression)."))
+            await self.record_checkpoint(msg_id)
+        finally:
+            _active_progress.pop(progress_str, None)
+            shutil.rmtree(str(issue_temp_dir), ignore_errors=True)
+
     async def run(self):
         """Executes the pipeline loop."""
         await self.connect()
@@ -944,11 +1473,51 @@ class TelegramArchivePipeline:
         print(f" Source Channel  : {colorize(title, 'bold')}", flush=True)
         print(f" Target Library  : {self.config.target_root}", flush=True)
         print(f" Temp Staging    : {self.config.staging_dir} (Safe on D:, C: untouched)", flush=True)
+        print(f" Concurrency     : {colorize(str(self.config.concurrency) + ' flux simultanes', 'bold')}", flush=True)
+        if self.config.skip_deanonymize:
+            print(f" Deanonymisation : {colorize('Desactivee (--skip-deanonymize)', 'yellow')}", flush=True)
+        elif self.config.deanonymize_until:
+            print(f" Deanonymisation : {colorize(f'Activee jusqu au message #{self.config.deanonymize_until}', 'yellow')}", flush=True)
         print("=" * 75, flush=True)
 
         stats = {"total": 0, "skipped": 0, "processed": 0, "errors": 0}
 
-        async for message in self.client.iter_messages(entity, reverse=True):
+        start_min_id = None
+        if self.config.from_id is not None:
+            start_min_id = max(0, self.config.from_id - 1)
+            print(colorize(f"[*] Reprise forcee a partir du message #{self.config.from_id}", "cyan"), flush=True)
+        elif self.config.resume:
+            last_id = self.load_checkpoint()
+            if last_id:
+                start_min_id = last_id
+                print(colorize(f"[*] Reprise activee : scan a partir du message #{last_id + 1}", "cyan"), flush=True)
+
+        iter_kwargs = {"reverse": True}
+        if start_min_id is not None:
+            iter_kwargs["min_id"] = start_min_id
+
+        queue: asyncio.Queue = asyncio.Queue(maxsize=self.config.concurrency * 6)
+
+        async def worker():
+            while True:
+                item = await queue.get()
+                if item is None:
+                    queue.task_done()
+                    break
+                msg, prog_str = item
+                try:
+                    await self.process_tome(entity, msg, prog_str, stats)
+                except Exception as w_err:
+                    print(failure(f"[!] Erreur worker sur message #{msg.id}: {w_err}"), flush=True)
+                finally:
+                    queue.task_done()
+
+        worker_tasks = [
+            asyncio.create_task(worker())
+            for _ in range(self.config.concurrency)
+        ]
+
+        async for message in self.client.iter_messages(entity, **iter_kwargs):
             if not message.file:
                 continue
 
@@ -957,15 +1526,12 @@ class TelegramArchivePipeline:
                 break
 
             msg_id = message.id
+            self._all_seen_ids.append(msg_id)
             raw_filename = message.file.name or f"file_{msg_id}"
             file_size = message.file.size or 0
             tg_ext = Path(raw_filename).suffix.lower()
 
-            # Position dans le lot : sans ça, un long silence donne
-            # l'impression que le script est bloqué alors qu'il avance.
-            progress = f"[{stats['total']}"
-            if self.config.limit:
-                progress += f"/{self.config.limit}"
+            progress = f"[#{msg_id}]"
 
             canonical_name = raw_filename if tg_ext in SUPPORTED_EXTENSIONS else f"{clean_stem(raw_filename)}.cbr"
             duplicate = self.catalog.find_duplicate(raw_filename)
@@ -981,23 +1547,21 @@ class TelegramArchivePipeline:
                 if tg_ext != drive_ext:
                     notes += f" (Format: TG {tg_ext} vs Drive {drive_ext})"
 
-                # Check if identical and can be safely purged from Telegram
                 deleted = False
                 status_str = "SKIPPED_EXISTING"
                 if not self.config.dry_run and self.config.delete_identical_duplicates:
                     if diff == 0 and drive_path.exists() and drive_sz > 0:
                         try:
-                            print(f"[PURGE-DOUBLON] #{msg_id} {canonical_name} ({format_size(drive_sz)}) identique au Drive -> Suppression Telegram...", end="", flush=True)
                             await self.client.delete_messages(entity, msg_id)
                             deleted = True
                             stats["purged"] = stats.get("purged", 0) + 1
                             status_str = "PURGED_EXISTING_IDENTICAL"
-                            print(" OK", flush=True)
+                            log_print(warn(f"  [PURGE-DOUBLON] #{msg_id} {canonical_name} ({format_size(drive_sz)}) identique au Drive -> Message Telegram supprime"))
                         except Exception as err:
-                            print(f" Échec: {err}", flush=True)
-                
+                            log_print(failure(f"  [!] #{msg_id} Echec suppression Telegram: {err}"))
+
                 if not deleted:
-                    print(dim(f"  [DOUBLON] #{msg_id} {canonical_name} (TG: {format_size(file_size)}) deja sur le Drive ({format_size(drive_sz)}) [{notes}]"), flush=True)
+                    log_print(dim(f"  [DOUBLON] #{msg_id} {canonical_name} (TG: {format_size(file_size)}) deja sur le Drive ({format_size(drive_sz)}) [{notes}]"))
 
                 self.audit.log({
                     "timestamp": str(message.date),
@@ -1015,217 +1579,26 @@ class TelegramArchivePipeline:
                     "status": status_str,
                     "audit_notes": notes + (" [Message Telegram purgé]" if deleted else "")
                 })
+                await self.record_checkpoint(msg_id)
                 continue
 
-            # If mode is only to purge existing identical duplicates, skip downloading new ones
             if self.config.purge_identical_only:
+                await self.record_checkpoint(msg_id)
                 continue
-
-            # New Tome to Archive
-            target_folder = self.catalog.resolve_destination(canonical_name)
-            final_cbr_path = target_folder / canonical_name
-            print(f"\n{colorize('[NOUVEAU]', 'green+bold')} #{msg_id} {raw_filename} ({format_size(file_size)})", flush=True)
-            print(f"          -> Destination: {final_cbr_path.relative_to(self.config.target_root)}", flush=True)
 
             if self.config.dry_run:
+                target_folder = self.catalog.resolve_destination(canonical_name)
+                final_cbr_path = target_folder / canonical_name
+                log_print(colorize(f"[SIMULATION] #{msg_id} {raw_filename} ({format_size(file_size)}) -> {final_cbr_path.relative_to(self.config.target_root)}", "cyan"))
                 stats["processed"] += 1
+                await self.record_checkpoint(msg_id)
                 continue
 
-            # LIVE EXECUTION: 1-by-1 Download, Rebuild & Verify
-            try:
-                self.config.staging_dir.mkdir(parents=True, exist_ok=True)
-                issue_temp_dir = self.config.staging_dir / f"temp_{msg_id}"
-                issue_temp_dir.mkdir(parents=True, exist_ok=True)
-            except OSError as staging_err:
-                fallback_staging = Path(tempfile.gettempdir()) / "archiving-helper" / "_staging_temp"
-                try:
-                    fallback_staging.mkdir(parents=True, exist_ok=True)
-                    self.config.staging_dir = fallback_staging
-                    issue_temp_dir = self.config.staging_dir / f"temp_{msg_id}"
-                    issue_temp_dir.mkdir(parents=True, exist_ok=True)
-                    print(colorize(f"          [*] Staging redirigé vers : {fallback_staging}", "yellow"), flush=True)
-                except Exception as fatal_err:
-                    stats["errors"] += 1
-                    print(failure(f"    [ERREUR STOCKAGE] Impossible de créer le dossier temporaire : {fatal_err}"), flush=True)
-                    continue
+            await queue.put((message, progress))
 
-            try:
-                local_staging_file = issue_temp_dir / raw_filename
-                print(colorize(f"      {progress} Telechargement ({format_size(file_size)})...", "blue"), flush=True)
-                # Arret anticipe : des les 512 Ko, l'en-tete du fichier donne le
-                # nom Inducks du tome. Si un tome de MEME TAILLE est deja
-                # archive, c'est le meme fichier : on coupe le telechargement au
-                # lieu de recevoir 30 a 780 Mo pour rien.
-                #
-                # Telethon ignore la valeur de retour du progress_callback
-                # (verifie dans client/downloads.py) : seul un lever d'exception
-                # arrete la boucle "async for chunk in _iter_download". On utilise
-                # donc une exception dediee, attrapee juste apres l'appel.
-                early_exit: Dict[str, object] = {"stem": None, "path": None, "probed": False}
-
-                def _on_progress(current: int, total: int) -> None:
-                    report_progress(progress, current, total)
-                    if early_exit["probed"]:
-                        return
-                    if current < HEADER_PROBE_BYTES or total <= 0:
-                        return
-                    if total != file_size:
-                        # taille Telegram et taille reelle differentes : on ne se
-                        # fie pas a l'index, on attend la fin du telechargement.
-                        early_exit["probed"] = True
-                        return
-                    stem = identify_inducks_stem_from_header(local_staging_file)
-                    if not stem:
-                        return
-                    # Le nom est lu : la decision est prise une fois pour toutes,
-                    # sans relire l'en-tete a chaque bloc recu.
-                    early_exit["probed"] = True
-                    known = self.catalog.files_by_size.get(file_size)
-                    if not known or known.get("ambiguous"):
-                        return
-                    # L'en-tete donne le nom du scan (« GHL_M_2 »), la
-                    # bibliotheque le nom officiel (« fr_GHL_M_2 ») : on compare
-                    # les deux formes avant de conclure.
-                    known_stem = known["stem"].lower()
-                    if known_stem != stem.lower() and known_stem != official_stem(stem).lower():
-                        return
-                    early_exit["stem"] = stem
-                    early_exit["path"] = known["path"]
-                    raise _EarlyDuplicateExit(stem, known["path"])
-
-                try:
-                    await message.download_media(
-                        file=str(local_staging_file),
-                        progress_callback=_on_progress,
-                    )
-                except _EarlyDuplicateExit:
-                    # sortie rapide normale : traitee juste apres
-                    pass
-
-                if early_exit["stem"] is not None:
-                    existing = early_exit["path"]
-                    assert isinstance(existing, Path)
-                    reset_progress_line()
-                    gained = file_size - HEADER_PROBE_BYTES
-                    print(
-                        success(
-                            f"      {progress} Interrompu a {format_size(HEADER_PROBE_BYTES)} "
-                            f"(tome deja archive, {format_size(gained)} economises)"
-                        ),
-                        flush=True,
-                    )
-                    print(
-                        warn(
-                            f"          [i] Deja present : {existing.name} "
-                            f"({format_size(file_size)}, taille identique)"
-                        ),
-                        flush=True,
-                    )
-                    await self.purge_message(entity, msg_id, stats)
-                    stats["skipped"] += 1
-                    # Le fichier partiel n'a aucune valeur : on le jette.
-                    shutil.rmtree(issue_temp_dir, ignore_errors=True)
-                    continue
-
-                local_sz = local_staging_file.stat().st_size
-                reset_progress_line()
-                print(success(f"      {progress} Telecharge ({format_size(local_sz)})"), flush=True)
-
-                # Internal inspection for Inducks canonical name (if name is MD5 or unknown)
-                detected_stem = None
-                if not re.match(r"^[a-zA-Z]{2,3}_[a-zA-Z0-9]+_\d+", raw_filename):
-                    detected_stem = inspect_archive_for_inducks_name(local_staging_file)
-
-                # Nom officiel Inducks : « GHL_M_2 » (scan sans pays, numero
-                # compose) devient « fr_GHL_M_2 ». Les noms deja officiels
-                # restent inchanges ; un nom non resolu est garde tel quel et
-                # resolve_destination l'envoie dans Unknown.
-                received_stem = clean_stem(canonical_name)
-                final_stem = official_stem(detected_stem or received_stem)
-                renamed = final_stem != received_stem
-                if renamed:
-                    canonical_name = f"{final_stem}{Path(canonical_name).suffix}"
-                    target_folder = self.catalog.resolve_destination(canonical_name)
-                    final_cbr_path = target_folder / canonical_name
-                    label = "De-anonymise" if detected_stem else "Nom Inducks"
-                    print(colorize(f"          [*] {label} -> {canonical_name}", "magenta"), flush=True)
-
-                # L'extension suit le contenu, pas le nom recu de Telegram.
-                real_ext = archive_extension_from_content(local_staging_file)
-                if real_ext and Path(canonical_name).suffix.lower() != real_ext:
-                    canonical_name = f"{Path(canonical_name).stem}{real_ext}"
-                    final_cbr_path = target_folder / canonical_name
-                    print(colorize(f"          [*] Format reel -> {canonical_name}", "magenta"), flush=True)
-
-                # Check if this newly detected canonical file already exists on Drive and is identical!
-                if renamed:
-                    post_dup = self.catalog.find_duplicate(canonical_name)
-                    if post_dup and post_dup["size"] == local_sz and post_dup["path"].exists():
-                        print(warn(f"          [!] Deja present sur le Drive ({format_size(post_dup['size'])}) sous son vrai nom Inducks!"), flush=True)
-                        await self.purge_message(entity, msg_id, stats)
-                        stats["skipped"] += 1
-                        continue
-
-                target_folder.mkdir(parents=True, exist_ok=True)
-
-                # Un fichier different porte deja ce nom : on ne l'ecrase jamais.
-                # (Sur Windows, shutil.move echoue puis copy2 remplacait le tome.)
-                if final_cbr_path.exists():
-                    raise RuntimeError(
-                        f"Un autre fichier existe deja a destination ({format_size(final_cbr_path.stat().st_size)}) : "
-                        f"{final_cbr_path} — rien n'est ecrase."
-                    )
-
-                # Deplacement plutot que copie : le staging et la destination sont sur
-                # le meme volume (D:), donc c'est un renommage instantane. Mesure a
-                # 0,04 s contre 0,82 s en copie sur un tome de 54 Mo. Si le move
-                # echoue, le fichier reste dans le staging et la verification le signale.
-                try:
-                    shutil.move(str(local_staging_file), str(final_cbr_path))
-                except OSError:
-                    shutil.copy2(str(local_staging_file), str(final_cbr_path))
-
-                # Verification d'integrite
-                if not final_cbr_path.exists() or final_cbr_path.stat().st_size == 0:
-                    raise RuntimeError("Echec integrite : le fichier depose est vide ou absent.")
-
-                print(success(f"          [3/4] Valide a destination ({format_size(final_cbr_path.stat().st_size)})"), flush=True)
-
-                node_executable = shutil.which("node")
-                collection_script = Path(__file__).resolve().parents[1] / "src" / "pipelines" / "4_inducks_collection" / "collection.mjs"
-                if not node_executable or not collection_script.exists():
-                    raise RuntimeError("Mise à jour de collection indisponible : Node.js ou le module Inducks manque.")
-                # meme encodage que pour le catalogue (voir _load_publication_titles)
-                collection_result = subprocess.run(
-                    [node_executable, str(collection_script), str(final_cbr_path)],
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    check=False,
-                )
-                if collection_result.stdout:
-                    print(collection_result.stdout, end="", flush=True)
-                if collection_result.stderr:
-                    print(collection_result.stderr, end="", flush=True)
-                if collection_result.returncode != 0:
-                    raise RuntimeError("La mise à jour de collection a échoué ; le message Telegram sera conservé.")
-
-                # Suppression Telegram seulement apres verification, et si la purge est active
-                await self.purge_message(entity, msg_id, stats, duplicate=False)
-
-                # Update live catalog
-                self.catalog.files_by_name[canonical_name.lower()] = {"path": final_cbr_path, "size": final_cbr_path.stat().st_size}
-                self.catalog.files_by_stem[clean_stem(canonical_name).lower()] = {"path": final_cbr_path, "size": final_cbr_path.stat().st_size}
-                stats["processed"] += 1
-
-            except Exception as err:
-                stats["errors"] += 1
-                reset_progress_line()
-                print(failure(f"    [ERREUR SECURITE] Tome #{msg_id} non archive : {err}"), flush=True)
-                print(dim("                 -> Message Telegram PRESERVE (aucune suppression)."), flush=True)
-            finally:
-                shutil.rmtree(str(issue_temp_dir), ignore_errors=True)
+        for _ in range(self.config.concurrency):
+            await queue.put(None)
+        await asyncio.gather(*worker_tasks)
 
         write_run_log(self.config, stats)
 
@@ -1258,6 +1631,11 @@ def main():
     parser.add_argument("--target-dir", type=str, help="Root folder of the target comic library.")
     parser.add_argument("--staging-dir", type=str, help="Temporary staging folder on non-C drive.")
     parser.add_argument("--limit", type=int, help="Limit number of messages to process.")
+    parser.add_argument("--resume", action="store_true", help="Reprendre le scan après le dernier message traité (checkpoint).")
+    parser.add_argument("--from-id", type=int, help="Démarrer le scan à partir d'un ID de message Telegram précis.")
+    parser.add_argument("--concurrency", type=int, default=3, help="Nombre de téléchargements simultanés (recommandé: 3).")
+    parser.add_argument("--skip-deanonymize", action="store_true", help="Désactive l'inspection et la désanonymisation interne des archives.")
+    parser.add_argument("--deanonymize-until", type=int, default=2867, help="ID Telegram maximum jusqu'auquel effectuer la désanonymisation (défaut: 2867, car tous les fichiers suivants sont déjà nommés officiellement).")
 
     args = parser.parse_args()
 
@@ -1269,6 +1647,11 @@ def main():
     if args.target_dir: overrides["target_root"] = args.target_dir
     if args.staging_dir: overrides["staging_dir"] = args.staging_dir
     if args.limit: overrides["limit"] = args.limit
+    if args.resume: overrides["resume"] = True
+    if args.from_id: overrides["from_id"] = args.from_id
+    if args.concurrency: overrides["concurrency"] = args.concurrency
+    if args.skip_deanonymize: overrides["skip_deanonymize"] = True
+    if args.deanonymize_until: overrides["deanonymize_until"] = args.deanonymize_until
 
     if args.purge_identical_only:
         overrides["dry_run"] = False
