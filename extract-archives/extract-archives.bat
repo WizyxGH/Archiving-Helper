@@ -1,15 +1,44 @@
-@echo off
+﻿@echo off
 chcp 65001 >nul
 setlocal enabledelayedexpansion
-title Archiving Helper - Extraction d'archives
 cd /d "%~dp0"
 
+rem Detection langue FR / EN
+set "APP_LANG=en"
+for /f "tokens=3" %%A in ('reg query "HKCU\Control Panel\International" /v LocaleName 2^>nul') do (
+    set "LOC_VAL=%%A"
+    if /i "!LOC_VAL:~0,2!"=="fr" set "APP_LANG=fr"
+)
+if defined LANGUAGE (
+    if /i "!LANGUAGE:~0,2!"=="fr" set "APP_LANG=fr"
+    if /i "!LANGUAGE:~0,2!"=="en" set "APP_LANG=en"
+)
+
+if "!APP_LANG!"=="fr" goto init_fr
+:init_en
+set "MSG_TITLE=Archiving Helper - Archive Extraction"
+set "MSG_HEADER=  📂 EXTRACT AND FLATTEN ARCHIVES (CBR, CBZ, RAR, ZIP)"
+set "MSG_ERR_NO_EXTRACTOR=[ERROR] No supported extractor found. Please install WinRAR or 7-Zip."
+set "MSG_PROMPT=Drag-and-drop folder containing archives [Enter for current directory]:"
+set "MSG_COMPLETE=Extraction completed successfully!"
+goto init_done
+
+:init_fr
+set "MSG_TITLE=Archiving Helper - Extraction d'archives"
+set "MSG_HEADER=  📂 EXTRACTION ET APLATISSEMENT D'ARCHIVES (CBR, CBZ, RAR, ZIP)"
+set "MSG_ERR_NO_EXTRACTOR=[ERREUR] Aucun utilitaire d'extraction supporte trouve. Veuillez installer WinRAR ou 7-Zip."
+set "MSG_PROMPT=Glissez-deposez le dossier contenant les archives [Entree pour dossier courant] :"
+set "MSG_COMPLETE=Extraction terminee avec succes !"
+:init_done
+
+title !MSG_TITLE!
+
 echo ======================================================================
-echo   📂 EXTRACTION ET APLATISSEMENT D'ARCHIVES (CBR, CBZ, RAR, ZIP)
+echo !MSG_HEADER!
 echo ======================================================================
 echo.
 
-:: === Auto-detect extraction tool ===
+rem === Auto-detect extraction tool ===
 set "EXTRACTOR="
 set "EXTRACTOR_TYPE="
 
@@ -56,25 +85,24 @@ if not defined EXTRACTOR (
 )
 
 if not defined EXTRACTOR (
-    echo [ERROR] No supported extractor found. Please install WinRAR or 7-Zip.
+    echo !MSG_ERR_NO_EXTRACTOR!
     pause
     exit /b 1
 )
 
-echo [INFO] Using extractor: %EXTRACTOR% (%EXTRACTOR_TYPE%)
+echo [INFO] Extractor: %EXTRACTOR% (%EXTRACTOR_TYPE%)
 echo.
 
-:: === Target resolution ===
+rem === Target resolution ===
 set "EXTENSIONS=.cbr .cbz .zip .rar .7z"
 
 if "%~1"=="" (
-    echo Glissez-déposez le dossier contenant les archives (ou Entrée pour le dossier courant) :
+    echo !MSG_PROMPT!
     set /p "TARGET_DIR="
     if not defined TARGET_DIR set "TARGET_DIR=%CD%"
     set "TARGET_DIR=!TARGET_DIR:"=!"
     call :process_directory "!TARGET_DIR!"
 ) else (
-    :: Arguments provided (drag and drop files or folders)
     for %%A in (%*) do (
         if exist "%%~fA\*" (
             call :process_directory "%%~fA"
@@ -86,13 +114,12 @@ if "%~1"=="" (
 
 echo.
 echo ===========================================
-echo   Extraction complete.
+echo   !MSG_COMPLETE!
 echo ===========================================
 echo.
 pause
 exit /b 0
 
-:: === Process all archives in a directory ===
 :process_directory
 set "DIR_PATH=%~1"
 if not exist "%DIR_PATH%" (
@@ -117,7 +144,6 @@ for %%F in (*.*) do (
 popd
 exit /b
 
-:: === Process a single archive file ===
 :process_single_file
 set "FILE_PATH=%~1"
 set "ext=%~x1"
@@ -127,10 +153,9 @@ for %%E in (%EXTENSIONS%) do (
         exit /b
     )
 )
-echo [SKIP] Unsupported extension for file: "%FILE_PATH%"
+echo [SKIP] Unsupported extension: "%FILE_PATH%"
 exit /b
 
-:: === Perform extraction ===
 :extract_archive
 set "ARCHIVE_FILE=%~1"
 set "DEST_DIR=%~2%~3"
@@ -156,7 +181,6 @@ if exist "%DEST_DIR%\" (
 )
 exit /b
 
-:: === FLATTEN function to avoid redundant subfolders ===
 :flatten
 set "TARGET=%~1"
 
@@ -186,7 +210,6 @@ if %filecount% equ 0 if %foldercount% equ 1 (
 )
 exit /b
 
-:: === Count items in final directory ===
 :count_files
 set "TARGET=%~1"
 set /a finalcount=0

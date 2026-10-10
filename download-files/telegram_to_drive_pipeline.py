@@ -468,13 +468,15 @@ def report_progress(progress: str, current: int, total: int) -> None:
     if current >= total:
         _active_progress.pop(progress, None)
 
-    # Cadencement à 80 ms pour fluidité sans saturer le terminal
-    if (now - _last_render_time) < 0.08 and current < total:
+    # Cadencement à 400 ms pour éviter de saturer le terminal
+    if (now - _last_render_time) < 0.4 and current < total:
         return
     _last_render_time = now
 
     if not _active_progress:
         return
+
+    cols = shutil.get_terminal_size((80, 20)).columns
 
     if len(_active_progress) == 1:
         prog_id, d = next(iter(_active_progress.items()))
@@ -484,16 +486,17 @@ def report_progress(progress: str, current: int, total: int) -> None:
         spd = d.get("speed", 0.0)
         speed_text = f" • {format_size(spd)}/s" if spd > 0 else ""
 
-        bar_width = 16
+        bar_width = max(8, min(16, cols - 55))
         filled = min(int((cur / tot) * bar_width), bar_width) if tot else 0
         bar = "█" * filled + "░" * (bar_width - filled)
         bar_color = "green" if pct >= 90 else "yellow" if pct >= 40 else "cyan"
 
-        sys.stdout.write(
-            f"\r      {dim(prog_id)} {colorize(bar, bar_color)} "
+        line = (
+            f"\r  {dim(prog_id)} {colorize(bar, bar_color)} "
             f"{colorize(f'{pct:5.1f} %', 'bold')} "
             f"{dim(f'({format_size(cur)} / {format_size(tot)}{speed_text})')}\033[K"
         )
+        sys.stdout.write(line)
     else:
         items = []
         total_speed = 0.0
@@ -506,11 +509,16 @@ def report_progress(progress: str, current: int, total: int) -> None:
             items.append(f"{prog_id}: {pct:4.1f}%")
 
         summary = " | ".join(items)
-        tot_speed_text = f" • Total: {format_size(total_speed)}/s" if total_speed > 0 else ""
-        sys.stdout.write(
-            f"\r      {dim(f'[{len(_active_progress)}x]')} {colorize(summary, 'bold')}"
-            f"{dim(tot_speed_text)}\033[K"
-        )
+        speed_text = f" • {format_size(total_speed)}/s" if total_speed > 0 else ""
+        prefix = f"[{len(_active_progress)}x] "
+
+        # Tronquer si la ligne totale risque de dépasser la largeur du terminal
+        max_summary_len = max(10, cols - len(prefix) - len(speed_text) - 6)
+        if len(summary) > max_summary_len:
+            summary = summary[:max_summary_len - 1] + "…"
+
+        line = f"\r  {dim(prefix)}{colorize(summary, 'bold')}{dim(speed_text)}\033[K"
+        sys.stdout.write(line)
     sys.stdout.flush()
 
 

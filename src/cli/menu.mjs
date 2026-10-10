@@ -13,6 +13,7 @@ import { syncInducksDatabase, resolveInducksPublication } from '../core/inducks/
 import { getCollectionDirectory } from '../pipelines/5_sheets_update/collection_csv.mjs';
 import { syncDriveToInducksCollection } from '../pipelines/4_inducks_collection/sync_drive_to_collection.mjs';
 import { auditDirectory, targetArchivePath, isPathVolumeAccessible } from '../core/config.mjs';
+import { t, getLanguage, setLanguage } from '../core/i18n.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -94,7 +95,7 @@ const rl = readline.createInterface({
 const ask = (query) => new Promise((resolve) => rl.question(query, resolve));
 
 async function askArchiveFormat() {
-  const selection = (await ask('Format [CBR/CBZ, défaut CBR] : ')).trim().toLowerCase();
+  const selection = (await ask(t('prompt_archive_format'))).trim().toLowerCase();
   return selection === 'cbz' ? 'cbz' : 'cbr';
 }
 
@@ -111,35 +112,42 @@ function clearScreen() {
 async function showMainMenu() {
   while (true) {
     clearScreen();
+    const currentLang = getLanguage().toUpperCase();
     console.log(`
 ======================================================================
-  📦 ARCHIVING HELPER - SUITE D'AUTOMATISATION & ARCHIVAGE DE BDS
+  📦 ${t('app_title')}
 ======================================================================
 
-  --- 📥 TÉLÉCHARGEMENT & ACQUISITION ---
-  [1]  🌐 Télécharger depuis un lien / URL ou recherche (Archive.org, Blogspot, Direct)
-  [2]  📁 Télécharger les liens depuis files.txt (Multi-sources & aria2c)
-  [3]  📱 Pipeline Telegram -> Drive (Audit, Écriture, Purge doublons)
+  ${t('section_acquisition')}
+  [1]  ${t('opt_1')}
+  [2]  ${t('opt_2')}
+  [3]  ${t('opt_3')}
 
-  --- 🔄 CONVERSION & TRAITEMENT D'IMAGES / ARCHIVES ---
-  [4]  📄 Convertir PDF en JPG / CBZ / CBR (Extraction sans perte)
-  [5]  📚 Convertir CBR en CBZ (Repack RAR -> ZIP sans perte)
-  [6]  🖼️ Convertir WebP en JPG (ImageMagick)
-  [7]  📑 Assembler des images en un seul PDF (ImageMagick)
-  [8]  📂 Extraire et aplatir des archives (CBR, CBZ, RAR, ZIP)
-  [9]  🧹 Supprimer les filigranes d'un PDF (Glénat BAT... 100% sans perte)
+  ${t('section_conversion')}
+  [4]  ${t('opt_4')}
+  [5]  ${t('opt_5')}
+  [6]  ${t('opt_6')}
+  [7]  ${t('opt_7')}
+  [8]  ${t('opt_8')}
+  [9]  ${t('opt_9')}
 
-  --- 🏛️ GESTION & REGISTRE INDUCKS ---
-  [10] 🛠️ Réparer / Désanonymiser une archive ou dossier (Vers CBZ Inducks)
-  [11] 🔄 Synchroniser Disque D: -> Collection Inducks CSV
-  [12] 📚 Synchroniser la base de données Inducks (ISV locale)
-  [13] 📤 Examiner les paquets Inducks en attente
+  ${t('section_inducks')}
+  [10] ${t('opt_10')}
+  [11] ${t('opt_11')}
+  [12] ${t('opt_12')}
+  [13] ${t('opt_13')}
 
-  [0]  🚪 Quitter
+  [L]  🌐 Langue / Language : [${currentLang}]
+  [0]  ${t('quit')}
 
 ======================================================================`);
 
-    const choice = (await ask('Votre choix [0-13] : ')).trim();
+    const choice = (await ask(t('menu_prompt'))).trim();
+
+    if (choice.toLowerCase() === 'l') {
+      setLanguage(getLanguage() === 'fr' ? 'en' : 'fr');
+      continue;
+    }
 
     if (choice === '1') {
       clearScreen();
@@ -335,216 +343,223 @@ async function showMainMenu() {
     } else if (choice === '4') {
       clearScreen();
       console.log(`======================================================================`);
-      console.log(`  📄 CONVERSION PDF VERS JPG / CBZ / CBR (EXTRACTION SANS PERTE)`);
+      console.log(`${t('pdf_header')}`);
       console.log(`======================================================================\n`);
-      console.log('Extrait les images d\'un ou plusieurs PDF sans réencodage (pdfimages natif).');
-      console.log('Peut compresser automatiquement en archive CBZ ou CBR.\n');
 
-      let inputPath = (await ask('Glissez-déposez le fichier ou dossier PDF : ')).trim();
+      let inputPath = (await ask(t('prompt_pdf_path'))).trim();
       inputPath = inputPath.replace(/^["']|["']$/g, '');
 
       if (inputPath && fs.existsSync(inputPath)) {
-        const archiveChoice = (await ask('Créer une archive après extraction ? [cbz/cbr/non, défaut: cbz] : ')).trim().toLowerCase();
-        const format = archiveChoice === 'cbr' ? 'cbr' : archiveChoice === 'non' ? '' : 'cbz';
-        const keepChoice = (await ask('Conserver le dossier des images JPG extraites ? (O/N, défaut: N) : ')).trim();
-        const keepJpgs = /^o(ui)?$/i.test(keepChoice);
+        const archiveChoice = (await ask(t('prompt_cbz_convert'))).trim().toLowerCase();
+        const format = archiveChoice === '2' || archiveChoice === 'cbr' ? 'cbr' : (archiveChoice === '3' || archiveChoice === 'non' || archiveChoice === 'no') ? '' : 'cbz';
+        const keepPrompt = getLanguage() === 'fr'
+          ? 'Conserver le dossier des images JPG extraites ? (O/N, défaut: N) : '
+          : 'Keep extracted JPG images folder? (Y/N, default: N): ';
+        const keepChoice = (await ask(keepPrompt)).trim();
+        const keepJpgs = /^[oy](ui|es)?$/i.test(keepChoice);
 
         const pdfScript = path.join(rootDir, 'convert-pdf-to-jpg', 'pdf-to-jpg.mjs');
         const args = [pdfScript, inputPath];
         if (format) args.push('--archive', format);
         if (keepJpgs) args.push('--keep-jpgs');
 
-        console.log('\n  Traitement en cours...\n');
+        console.log(getLanguage() === 'fr' ? '\n  Traitement en cours...\n' : '\n  Processing...\n');
         spawnSync(process.execPath, args, { stdio: 'inherit' });
       } else if (inputPath) {
-        console.log(`\n[!] Chemin introuvable : ${inputPath}`);
+        console.log(`\n[!] ${getLanguage() === 'fr' ? 'Chemin introuvable' : 'Path not found'} : ${inputPath}`);
       }
-      await ask('\nAppuyez sur Entrée pour continuer...');
+      await ask(`\n${t('press_enter_to_continue')}`);
 
     } else if (choice === '5') {
       clearScreen();
       console.log(`======================================================================`);
-      console.log(`  📚 CONVERSION CBR VERS CBZ (REPACK SANS PERTE)`);
+      console.log(`${t('cbr_header')}`);
       console.log(`======================================================================\n`);
-      console.log('Décompresse le RAR et réassemble en ZIP/CBZ standard sans altérer les images.\n');
 
-      let inputPath = (await ask('Glissez-déposez le fichier ou dossier CBR : ')).trim();
+      let inputPath = (await ask(t('prompt_cbr_path'))).trim();
       inputPath = inputPath.replace(/^["']|["']$/g, '');
 
       if (inputPath && fs.existsSync(inputPath)) {
-        const delChoice = (await ask('Supprimer les fichiers .cbr originaux après conversion ? (O/N, défaut: N) : ')).trim();
-        const deleteOriginal = /^o(ui)?$/i.test(delChoice);
+        const delChoice = (await ask(t('prompt_delete_cbr'))).trim();
+        const deleteOriginal = /^[oy](ui|es)?$/i.test(delChoice);
 
         const psScript = path.join(rootDir, 'convert-cbr-to-cbz', 'convert-cbr-to-cbz.ps1');
         const psArgs = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', psScript];
         if (deleteOriginal) psArgs.push('-DeleteOriginal');
         psArgs.push(inputPath);
 
-        console.log('\n  Conversion en cours...\n');
+        console.log(getLanguage() === 'fr' ? '\n  Conversion en cours...\n' : '\n  Converting...\n');
         spawnSync('powershell.exe', psArgs, { stdio: 'inherit' });
       } else if (inputPath) {
-        console.log(`\n[!] Chemin introuvable : ${inputPath}`);
+        console.log(`\n[!] ${getLanguage() === 'fr' ? 'Chemin introuvable' : 'Path not found'} : ${inputPath}`);
       }
-      await ask('\nAppuyez sur Entrée pour continuer...');
+      await ask(`\n${t('press_enter_to_continue')}`);
 
     } else if (choice === '6') {
       clearScreen();
       console.log(`======================================================================`);
-      console.log(`  🖼️ CONVERSION WEBP VERS JPG (IMAGEMAGICK)`);
+      console.log(`${t('webp_header')}`);
       console.log(`======================================================================\n`);
-      console.log('Convertit par lot tous les fichiers .webp en images .jpg haute qualité (95%).\n');
 
-      let inputPath = (await ask('Glissez-déposez le fichier ou dossier contenant des WebP : ')).trim();
+      let inputPath = (await ask(t('prompt_webp_path'))).trim();
       inputPath = inputPath.replace(/^["']|["']$/g, '');
 
       if (inputPath && fs.existsSync(inputPath)) {
         const batScript = path.join(rootDir, 'convert-webp-to-jpg', 'convert-webp-to-jpg.bat');
-        console.log('\n  Lancement de la conversion...\n');
+        console.log(getLanguage() === 'fr' ? '\n  Lancement de la conversion...\n' : '\n  Starting conversion...\n');
         spawnSync('cmd.exe', ['/c', batScript, inputPath], { stdio: 'inherit' });
       } else if (inputPath) {
-        console.log(`\n[!] Chemin introuvable : ${inputPath}`);
+        console.log(`\n[!] ${getLanguage() === 'fr' ? 'Chemin introuvable' : 'Path not found'} : ${inputPath}`);
       }
-      await ask('\nAppuyez sur Entrée pour continuer...');
+      await ask(`\n${t('press_enter_to_continue')}`);
 
     } else if (choice === '7') {
       clearScreen();
       console.log(`======================================================================`);
-      console.log(`  📑 ASSEMBLER DES IMAGES EN UN SEUL FICHIER PDF`);
+      console.log(`${t('images_to_pdf_header')}`);
       console.log(`======================================================================\n`);
-      console.log('Regroupe toutes les images d\'un dossier en un document PDF avec tri naturel.\n');
 
-      let inputPath = (await ask('Glissez-déposez le dossier contenant les images : ')).trim();
+      let inputPath = (await ask(t('prompt_images_dir'))).trim();
       inputPath = inputPath.replace(/^["']|["']$/g, '');
 
       if (inputPath && fs.existsSync(inputPath)) {
         const batScript = path.join(rootDir, 'images-to-pdf', 'images-to-pdf.bat');
-        console.log('\n  Génération du PDF en cours...\n');
+        console.log(getLanguage() === 'fr' ? '\n  Génération du PDF en cours...\n' : '\n  Generating PDF...\n');
         spawnSync('cmd.exe', ['/c', batScript, inputPath], { stdio: 'inherit' });
       } else if (inputPath) {
-        console.log(`\n[!] Dossier introuvable : ${inputPath}`);
+        console.log(`\n[!] ${getLanguage() === 'fr' ? 'Dossier introuvable' : 'Folder not found'} : ${inputPath}`);
       }
-      await ask('\nAppuyez sur Entrée pour continuer...');
+      await ask(`\n${t('press_enter_to_continue')}`);
 
     } else if (choice === '8') {
       clearScreen();
       console.log(`======================================================================`);
-      console.log(`  📂 EXTRACTION ET APLATISSEMENT D'ARCHIVES (CBR, CBZ, RAR, ZIP)`);
+      console.log(`${t('extract_header')}`);
       console.log(`======================================================================\n`);
-      console.log('Extrait automatiquement les archives et aplatit les sous-dossiers inutiles.\n');
 
-      let inputPath = (await ask('Glissez-déposez le fichier ou dossier d\'archives : ')).trim();
+      let inputPath = (await ask(t('prompt_extract_path'))).trim();
       inputPath = inputPath.replace(/^["']|["']$/g, '');
 
       if (inputPath && fs.existsSync(inputPath)) {
         const batScript = path.join(rootDir, 'extract-archives', 'extract-archives.bat');
-        console.log('\n  Extraction en cours...\n');
+        console.log(getLanguage() === 'fr' ? '\n  Extraction en cours...\n' : '\n  Extracting...\n');
         spawnSync('cmd.exe', ['/c', batScript, inputPath], { stdio: 'inherit' });
       } else if (inputPath) {
-        console.log(`\n[!] Chemin introuvable : ${inputPath}`);
+        console.log(`\n[!] ${getLanguage() === 'fr' ? 'Chemin introuvable' : 'Path not found'} : ${inputPath}`);
       }
-      await ask('\nAppuyez sur Entrée pour continuer...');
+      await ask(`\n${t('press_enter_to_continue')}`);
 
     } else if (choice === '9') {
       clearScreen();
       console.log(`======================================================================`);
-      console.log(`  🧹 SUPPRESSION DE FILIGRANES PDF (SANS PERTE / SANS RÉENCODAGE)`);
+      console.log(`${t('watermark_header')}`);
       console.log(`======================================================================\n`);
-      console.log('Supprime les filigranes vectoriels, textes, et calques (Glénat, Spécimen, etc.)');
-      console.log('Les images originales de la BD restent 100% intactes à l\'octet près.\n');
+      console.log(t('watermark_intro') + '\n');
 
-      let targetPdf = (await ask('Glissez-déposez le fichier PDF à nettoyer : ')).trim();
+      let targetPdf = (await ask(t('prompt_watermark_input'))).trim();
       targetPdf = targetPdf.replace(/^["']|["']$/g, '');
 
       if (targetPdf && fs.existsSync(targetPdf)) {
         const python = resolvePython() || 'python';
         const removerScript = path.join(rootDir, 'src', 'core', 'pdf_watermark_remover.py');
-        console.log('\n  Nettoyage chirurgical en cours...\n');
+        console.log(`\n  ${t('watermark_in_progress')}\n`);
         const res = spawnSync(python.command || python, [...(python.args || []), removerScript, targetPdf], {
           stdio: 'inherit',
           env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
         });
         if (res.error) {
-          console.error(`\n[!] Erreur lors de l'exécution : ${res.error.message}`);
+          console.error(`\n[!] ${t('watermark_error', { message: res.error.message })}`);
         }
       } else if (targetPdf) {
-        console.log(`\n[!] Fichier introuvable : ${targetPdf}`);
+        console.log(`\n[!] ${getLanguage() === 'fr' ? 'Fichier introuvable' : 'File not found'} : ${targetPdf}`);
       }
-      await ask('\nAppuyez sur Entrée pour continuer...');
+      await ask(`\n${t('press_enter_to_continue')}`);
 
     } else if (choice === '10') {
       clearScreen();
       console.log(`======================================================================`);
-      console.log(`  🛠️ RÉPARATION ET DÉSANONYMISATION CBZ INDUCKS`);
+      console.log(`${t('repair_header')}`);
       console.log(`======================================================================\n`);
-      let inputPath = (await ask('Glissez-déposez le fichier ou dossier ici : ')).trim();
+      let inputPath = (await ask(t('prompt_repair_path'))).trim();
       inputPath = inputPath.replace(/^["']|["']$/g, '');
       if (inputPath) {
         try {
           await repairAndRepackToCbz(inputPath);
         } catch (err) {
-          console.error(`\n[!] Erreur : ${err.message}`);
+          console.error(`\n[!] ${err.message}`);
         }
       }
-      await ask('\nAppuyez sur Entrée pour continuer...');
+      await ask(`\n${t('press_enter_to_continue')}`);
 
     } else if (choice === '11') {
       clearScreen();
+      console.log(`======================================================================`);
+      console.log(`${t('sync_header')}`);
+      console.log(`======================================================================\n`);
+      console.log(`${t('sync_intro')}\n`);
       try {
         await syncDriveToInducksCollection();
       } catch (err) {
-        console.error(`\n[!] Erreur lors de la synchronisation : ${err.message}`);
+        console.error(`\n[!] ${err.message}`);
       }
-      await ask('\nAppuyez sur Entrée pour continuer...');
+      await ask(`\n${t('press_enter_to_continue')}`);
 
     } else if (choice === '12') {
       clearScreen();
       console.log(`======================================================================`);
-      console.log(`  📚 BASE DE DONNÉES INDUCKS (SYNC & TEST DE RÉSOLUTION)`);
+      console.log(`${t('db_sync_header')}`);
       console.log(`======================================================================\n`);
       try {
         await syncInducksDatabase(true);
-        const testName = (await ask('Entrez un nom de tome à tester (ex: Picsou Magazine 550) : ')).trim();
+        const testPrompt = getLanguage() === 'fr'
+          ? 'Entrez un nom de tome à tester (ex: Picsou Magazine 550) : '
+          : 'Enter an issue name to test (e.g. Uncle Scrooge 400): ';
+        const testName = (await ask(testPrompt)).trim();
         if (testName) {
           const res = await resolveInducksPublication(testName);
-          console.log('\nRésultat de la résolution :');
+          console.log('\n' + (getLanguage() === 'fr' ? 'Résultat de la résolution :' : 'Resolution result:'));
           console.log(JSON.stringify(res, null, 2));
         }
       } catch (err) {
-        console.error(`\n[!] Erreur : ${err.message}`);
+        console.error(`\n[!] ${err.message}`);
       }
-      await ask('\nAppuyez sur Entrée pour continuer...');
+      await ask(`\n${t('press_enter_to_continue')}`);
 
     } else if (choice === '13') {
       clearScreen();
       const pendingDirectory = path.join(getCollectionDirectory(), 'inducks_upload_pending');
       console.log('======================================================================');
-      console.log('  📤 PAQUETS INDUCKS À CONFIRMER');
+      console.log(`${t('batches_header')}`);
       console.log('======================================================================\n');
 
       if (!fs.existsSync(pendingDirectory)) {
-        console.log('Aucun paquet Inducks en attente.');
+        console.log(t('batches_none', { dir: pendingDirectory }));
       } else {
         const bundles = fs.readdirSync(pendingDirectory, { withFileTypes: true })
           .filter(entry => entry.isDirectory())
           .map(entry => entry.name);
         if (bundles.length === 0) {
-          console.log('Aucun paquet Inducks en attente.');
+          console.log(t('batches_none', { dir: pendingDirectory }));
         } else {
+          console.log(t('batches_found', { count: bundles.length }));
           for (const bundle of bundles) console.log(`  • ${bundle}`);
-          const confirmation = (await ask('\nOuvrir le dossier pour vérifier et téléverser manuellement ? (O/N) : ')).trim();
-          if (/^o(ui)?$/i.test(confirmation)) {
+          const promptOpen = getLanguage() === 'fr'
+            ? '\nOuvrir le dossier pour vérifier et téléverser manuellement ? (O/N) : '
+            : '\nOpen folder to review and upload manually? (Y/N): ';
+          const confirmation = (await ask(promptOpen)).trim();
+          if (/^[oy](ui|es)?$/i.test(confirmation)) {
             const viewer = spawn('explorer.exe', [pendingDirectory], { detached: true, stdio: 'ignore' });
-            viewer.on('error', (err) => console.error(`Impossible d’ouvrir le dossier : ${err.message}`));
+            viewer.on('error', (err) => console.error(`[!] ${err.message}`));
             viewer.unref();
-            console.log(`\nDossier ouvert : ${pendingDirectory}`);
+            console.log(`\n${getLanguage() === 'fr' ? 'Dossier ouvert' : 'Folder opened'} : ${pendingDirectory}`);
           }
         }
       }
-      await ask('\nAppuyez sur Entrée pour continuer...');
+      await ask(`\n${t('press_enter_to_continue')}`);
 
     } else if (choice === '0') {
       clearScreen();
-      console.log('\nAu revoir !\n');
+      console.log(getLanguage() === 'fr' ? '\nAu revoir !\n' : '\nGoodbye!\n');
       rl.close();
       process.exit(0);
     }
